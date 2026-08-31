@@ -63,6 +63,13 @@ func Handler() (http.Handler, error) {
 		// JSON-parse the discovery 404 body and abort the whole connection on a
 		// parse error instead of treating the 404 as "no OAuth, use the bearer
 		// token". A parseable empty object lets them fall back to static auth.
+		//
+		// Defense in depth only: the server registers the probe routes the
+		// clients actually hit (POST /register, the RFC 9728/8414/OIDC
+		// discovery paths) ahead of this catch-all, and they answer with a
+		// message that says what went wrong — see internal/server/oauthprobe.go.
+		// This branch still covers other .well-known/* paths and a standalone
+		// ui.Mount with no server router in front of it.
 		if req.Method != http.MethodGet || strings.HasPrefix(name, ".well-known/") {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.WriteHeader(http.StatusNotFound)

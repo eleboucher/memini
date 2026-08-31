@@ -17,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/eleboucher/memini/internal/httputil"
 	"github.com/eleboucher/memini/internal/store"
 	"github.com/eleboucher/memini/internal/version"
 )
@@ -86,6 +87,9 @@ func New(opts Options, log *slog.Logger, reg *prometheus.Registry) *Server {
 
 	r.Get("/healthz", s.handleHealthz)
 	r.Get("/readyz", s.handleReadyz)
+	// Unconditional: an MCP client only reaches these after auth failed, and
+	// the reply is the diagnosis the user sees (see oauthprobe.go).
+	registerOAuthProbes(r)
 
 	metricsHandler := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
 	if opts.MetricsAddr != "" && opts.MetricsAddr != opts.Addr {
@@ -132,7 +136,10 @@ func (s *Server) MountUI(spa http.Handler) {
 func bearerAuth(key string, h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !validBearer(r, key) {
-			http.Error(w, `{"error":"missing or invalid bearer token"}`, http.StatusUnauthorized)
+			// RFC 6750: name the scheme the resource expects (same as the MCP
+			// auth wrapper's 401).
+			w.Header().Set("WWW-Authenticate", `Bearer realm="memini"`)
+			httputil.Error(w, http.StatusUnauthorized, "missing or invalid bearer token")
 			return
 		}
 		h.ServeHTTP(w, r)

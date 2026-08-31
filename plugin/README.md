@@ -334,6 +334,8 @@ This is **intentional security hardening**, not a Claude Code bug — a plugin i
 
 On plugin versions that read the bearer only from `MEMINI_API_KEY`, the effect was nasty because it was **asymmetric and silent**: the hooks (ordinary processes with full env) kept delivering briefings and recall, while the MCP `headersHelper` emitted no `Authorization`, the server 401'd, Claude Code fell into OAuth discovery, and the connection died with `Dynamic Client Registration rejected (HTTP 404)` — so every MCP tool (`memory_remember`/`memory_recall`/`memory_get`/`memory_forget`) silently disappeared. Reads looked healthy; writes were impossible.
 
+That error text is Claude Code's, not memini's, and what it actually means is **no valid bearer reached the server** — the OAuth machinery is a red herring, because memini has never spoken OAuth. Current memini servers answer the probes Claude Code sends during that dance (`POST /register`, and `GET` on `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`, `/.well-known/openid-configuration`) with a JSON 404 whose message says exactly that and points back at this section, so what Claude Code surfaces is a diagnosis instead of `{}`. The `/mcp` endpoint is also stateless now, so restarting the server no longer invalidates live sessions and stops forcing every client through the reconnect path in the first place. The operator-side causes — a reverse proxy eating the `Authorization` header, a rotated key — are in [Troubleshooting: Dynamic Client Registration rejected (HTTP 404)](../docs/operations/production.md#troubleshooting-dynamic-client-registration-rejected-http-404).
+
 ### The fix (shipped in this plugin)
 
 Filesystem access was never restricted — only env inheritance was. So the `SessionStart` hook (full env) mirrors `MEMINI_API_KEY` into
@@ -342,11 +344,28 @@ Filesystem access was never restricted — only env inheritance was. So the `Ses
 ${XDG_CONFIG_HOME:-~/.config}/memini/credentials   # mode 0600, keyed by base URL
 ```
 
-and the `headersHelper` falls back to it when its own env carries no key. An env-provided key still wins; unsetting `MEMINI_API_KEY` retires the stored copy at the next session start, so the file tracks the env rather than outliving a rotated key. The path is deliberately **not** configurable via an env var — any name containing `KEY`/`TOKEN`/`SECRET` would be stripped by the same heuristic.
+and the `headersHelper` falls back to it when its own env carries no key. An env-provided key still wins, so the file never shadows a key you actually exported. The path is deliberately **not** configurable via an env var — any name containing `KEY`/`TOKEN`/`SECRET` would be stripped by the same heuristic.
 
 The honest tradeoff: the bearer now also rests on disk, readable by any process running as you. It is memini's own file at `0600`, holds only memini's key, and entries are keyed by base URL so a bearer stored for one server is never sent to another — the upstream hardening targeted inheritance _breadth_ (every plugin seeing every credential), not secrets-at-rest. If that tradeoff is unacceptable in your environment, use the user-scope registration below instead.
 
 If the helper ever finds itself with no key while this session's handshake shows the hooks _are_ authenticated, it says so loudly on stderr (visible in Claude Code's MCP logs) instead of letting the connection die quietly.
+
+### Retiring the stored credential is a three-state decision
+
+The file is supposed to track the environment — but only when the environment says something. `MEMINI_API_KEY` is therefore read as three states at `SessionStart`, not two:
+
+| `MEMINI_API_KEY` in the session's environment | What happens to the stored copy                                                              |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| unset (the variable is absent)                | **kept**, untouched — the sync does no I/O at all                                            |
+| set and non-empty                             | **mirrored** for this base URL, replacing whatever was stored for it                         |
+| set but empty (`MEMINI_API_KEY=""`)           | **retired** for this base URL, with a `[memini]` line on stderr naming the base URL and file |
+
+Keeping the file when the variable is merely absent is the entire point. A session started from an environment that never carried the key — a desktop or IDE launcher, a systemd user unit, a `cron`-ish wrapper, or Codex running this same hook script through `hooks/hooks.codex.json` — used to delete the credential that every _other_ session's MCP reconnects depended on, and the symptom surfaced later, elsewhere, as `Dynamic Client Registration rejected (HTTP 404)`. An explicit empty value is the retirement signal instead, because it is the one state something has to write on purpose; it is logged rather than silent because some `.env` loaders materialize an unset variable as an empty one, which makes the deliberate signal reachable by accident.
+
+`/memini:status` reports the drift this creates, as two codes in its warnings block:
+
+- **`cred-file-stale`** (warn) — `MEMINI_API_KEY` is set in this environment, but the stored entry for this base URL is missing or holds a different bearer. Until a `SessionStart` mirrors the current value, the MCP `headersHelper` sends nothing (401) or the previous key, while the hooks authenticate fine — the asymmetric failure again. Fix: start a new session from this environment.
+- **`cred-file-only`** (info) — no `MEMINI_API_KEY` here, but a stored bearer exists. The MCP tools authenticate from the file; the hooks' REST calls from _this_ environment do not. That is the fallback doing exactly its job — but against a server that requires a bearer it is also the mirror image of the original failure, with writes working and reads 401ing. Export `MEMINI_API_KEY` where this session is launched from to authenticate both. An explicit `MEMINI_API_KEY=""` deliberately raises neither code.
 
 ### Workaround for older plugin versions
 

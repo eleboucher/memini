@@ -175,29 +175,39 @@ const serverInstructions = "memini is persistent cross-session memory for this a
 	"- Empty recall means nothing is known — proceed from first principles, never invent a " +
 	"remembered fact. A degraded field means results are keyword-only and incomplete, not a confident negative."
 
+// schemaCache is shared by every server this package builds. The HTTP surface
+// is served stateless (see HTTPHandlerWithAuth), so NewServer runs once per
+// request and would otherwise re-reflect and re-resolve every tool's schema on
+// every call; the SDK's SchemaCache is safe for concurrent use
+// (mcpsdk.NewSchemaCache), so one package-level value serves every request.
+// Stdio (RunStdio) builds one server per process and gets it for free.
+var schemaCache = mcpsdk.NewSchemaCache()
+
 // NewServer builds an MCP server exposing memini's memory tools. defaultNS is
 // used whenever a tool call omits the namespace argument. home is the
 // caller's personal namespace (X-Memini-Home / MEMINI_HOME), merged
 // read-only into every recall/briefing/answer/remember; "" means no home leg.
 // There is no per-call override — home is a transport-level default, fixed
-// for the life of this server instance. author is the name of the NAMED
-// table key that authenticated this session ("" for the admin key, an
-// unauthenticated stdio session, or auth-disabled dev mode); it is stamped
-// as metadata.author on writes via RememberInput.Author — see
-// service.stampAuthor. authorKind classifies author for activity attribution
-// ("key" for a named key, "env" for the admin env key, "none" for an
-// unauthenticated stdio/dev session — see store.Event); a receiving middleware
-// stamps (author, authorKind) onto every tool call's context via
-// service.WithActor, so all tools inherit it without threading a parameter.
+// for the life of this server INSTANCE, which is one HTTP request (the
+// Streamable HTTP handler is stateless — see HTTPHandlerWithAuth) or one
+// stdio process. author is the name of the NAMED table key that authenticated
+// the request ("" for the admin key, an unauthenticated stdio session, or
+// auth-disabled dev mode); it is stamped as metadata.author on writes via
+// RememberInput.Author — see service.stampAuthor. authorKind classifies author
+// for activity attribution ("key" for a named key, "env" for the admin env
+// key, "none" for an unauthenticated stdio/dev session — see store.Event); a
+// receiving middleware stamps (author, authorKind) onto every tool call's
+// context via service.WithActor, so all tools inherit it without threading a
+// parameter.
 func NewServer(svc *service.Service, defaultNS, home, author, authorKind string, opts ...ServerOption) *mcpsdk.Server {
 	s := mcpsdk.NewServer(&mcpsdk.Implementation{
 		Name:    "memini",
 		Version: version.Version,
-	}, &mcpsdk.ServerOptions{Instructions: serverInstructions})
+	}, &mcpsdk.ServerOptions{Instructions: serverInstructions, SchemaCache: schemaCache})
 
-	// Attribution is session-fixed and automatic: stamp it once here so every
-	// tool handler's ctx carries who is calling. Survives service.logEvents'
-	// fire-and-forget hop (context.WithoutCancel keeps values).
+	// Attribution is fixed for this server instance and automatic: stamp it once
+	// here so every tool handler's ctx carries who is calling. Survives
+	// service.logEvents' fire-and-forget hop (context.WithoutCancel keeps values).
 	s.AddReceivingMiddleware(func(next mcpsdk.MethodHandler) mcpsdk.MethodHandler {
 		return func(ctx context.Context, method string, req mcpsdk.Request) (mcpsdk.Result, error) {
 			return next(service.WithActor(ctx, author, authorKind), method, req)
@@ -348,7 +358,7 @@ func NewServer(svc *service.Service, defaultNS, home, author, authorKind string,
 }
 
 // mcpPrincipalKey is the context key HTTPHandler's outer auth check uses to
-// bridge the resolved apiauth.Principal into the per-session getServer
+// bridge the resolved apiauth.Principal into the per-request getServer
 // closure below: NewStreamableHTTPHandler calls getServer with the same
 // *http.Request ServeHTTP received (confirmed against the SDK's
 // StreamableHTTPHandler.ServeHTTP, which passes req straight through to
@@ -369,9 +379,15 @@ const mcpPrincipalKey mcpCtxKeyType = 0
 // becomes mandatory. This guarantees the two HTTP surfaces authenticate
 // identically for the same credentials.
 //
-// The resolved identity (principal, and the ns/home it carries) is fixed for
-// the lifetime of an MCP session — captured once when the session's server
-// is built below, not re-resolved per tool call — see NewServer's callers.
+// Sessions: this handler is served STATELESS (see HTTPHandlerWithAuth), so
+// every request builds its own server and the resolved identity (principal,
+// and the ns/home it carries) is fixed per SERVER INSTANCE — that is, per
+// request here, per process over stdio. It used to be captured once per MCP
+// session, which was a bug: requests 2..N of a session silently kept request
+// 1's namespace/home no matter what their headers said, and a different valid
+// key that reused a session ID inherited the first key's identity and
+// read-only flag. Changed headers and rotated keys now take effect on the very
+// next request.
 //
 // Namespace: taken from nsHeader when present, else the authenticated key's
 // DefaultNS, else defaultNS; tool calls may still override it per-call. This
@@ -417,6 +433,21 @@ func HTTPHandler(svc *service.Service, nsHeader, defaultNS, homeHeader, apiKey s
 func HTTPHandlerWithAuth(svc *service.Service, nsHeader, defaultNS, homeHeader string,
 	keyAuth apiauth.Config,
 ) http.Handler {
+	// Stateless: the handler keeps no session map, so a client whose session ID
+	// predates a server restart is served normally instead of being 404'd into
+	// Claude Code's OAuth/DCR recovery path (which ends at the SPA's 404 and the
+	// cryptic "Dynamic Client Registration rejected"). It also means this
+	// closure runs on EVERY request rather than once per session, so namespace,
+	// home, author and the read-only flag are re-derived from the headers and
+	// credential of the request at hand — the fix for the stale-identity bug
+	// documented above. The client's initialize state is synthesized from its
+	// MCP-Protocol-Version header (2025-03-26 when absent), which is harmless
+	// for a tool-only server that negotiates no optional capabilities.
+	//
+	// Deliberately no JSONResponse (keep the default SSE framing) and no
+	// SessionTimeout (there is no session map left to expire). ServerOptions'
+	// KeepAlive stays unset for the same reason: it pings server→client, and a
+	// stateless server rejects its own outbound requests outright.
 	h := mcpsdk.NewStreamableHTTPHandler(func(r *http.Request) *mcpsdk.Server {
 		p, _ := r.Context().Value(mcpPrincipalKey).(apiauth.Principal)
 		ns := defaultNS
@@ -455,17 +486,21 @@ func HTTPHandlerWithAuth(svc *service.Service, nsHeader, defaultNS, homeHeader s
 			kind = "env"
 		}
 		return NewServer(svc, ns, home, p.Name, kind, WithReadOnly(p.ReadOnly))
-	}, nil)
+	}, &mcpsdk.StreamableHTTPOptions{Stateless: true})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		p, ok, err := keyAuth.Authenticate(r.Context(), token)
 		if err != nil {
 			slog.ErrorContext(r.Context(), "mcp auth: key store lookup failed", "err", err)
-			http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+			httputil.Error(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		if !ok {
-			http.Error(w, `{"error":"missing or invalid bearer token"}`, http.StatusUnauthorized)
+			// RFC 6750: say which scheme the resource wants. Clients already fall
+			// into OAuth discovery on a bare 401 (that is the bug this branch is
+			// about), so naming Bearer only makes the existing ask explicit.
+			w.Header().Set("WWW-Authenticate", `Bearer realm="memini"`)
+			httputil.Error(w, http.StatusUnauthorized, "missing or invalid bearer token")
 			return
 		}
 		// Record the actor for the access log (the outer request logger's
@@ -486,7 +521,7 @@ func HTTPHandlerWithAuth(svc *service.Service, nsHeader, defaultNS, homeHeader s
 		// header", not an error.
 		if v := httputil.NormalizeNamespace(r.Header.Get(nsHeader)); v != "" {
 			if err := httputil.ValidateNamespace(v); err != nil {
-				http.Error(w, `{"error":"invalid namespace header"}`, http.StatusBadRequest)
+				httputil.Error(w, http.StatusBadRequest, "invalid namespace header")
 				return
 			}
 		}
@@ -499,7 +534,7 @@ func HTTPHandlerWithAuth(svc *service.Service, nsHeader, defaultNS, homeHeader s
 			// error, and one that survives normalization must be a valid namespace.
 			if v := httputil.NormalizeNamespace(r.Header.Get(homeHeader)); v != "" {
 				if err := httputil.ValidateNamespace(v); err != nil {
-					http.Error(w, `{"error":"invalid home header"}`, http.StatusBadRequest)
+					httputil.Error(w, http.StatusBadRequest, "invalid home header")
 					return
 				}
 			}
@@ -535,9 +570,9 @@ type tools struct {
 	// MEMINI_HOME), fixed for the life of this server instance; "" means no
 	// home leg. See NewServer.
 	defaultHome string
-	// defaultAuthor is the NAMED table key that authenticated this session,
-	// fixed for its life; "" for the admin key or an unauthenticated session.
-	// See NewServer.
+	// defaultAuthor is the NAMED table key that authenticated the request (or
+	// stdio process) this server instance was built for; "" for the admin key
+	// or an unauthenticated session. See NewServer.
 	defaultAuthor string
 }
 

@@ -21,7 +21,16 @@ import assert from "node:assert/strict";
 import { spawn, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, basename } from "node:path";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  readdirSync,
+  statSync,
+  chmodSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import http from "node:http";
@@ -411,7 +420,7 @@ test("session-start.mjs: handshake DOWN → degraded local namespace, still emit
   assert.doesNotMatch(stdout, /no stored memories yet/, "a null briefing must not claim emptiness");
 });
 
-test("session-start.mjs: mirrors MEMINI_API_KEY to the credentials file and retires it when unset", async () => {
+test("session-start.mjs: mirrors MEMINI_API_KEY, and a session with NO key leaves the stored copy alone", async () => {
   const config = freshConfig();
   const base = { MEMINI_BASE_URL: DEAD_URL, XDG_CACHE_HOME: freshCache(), XDG_CONFIG_HOME: config };
   await runHook("session-start.mjs", JSON.stringify({ cwd: __dirname, session_id: "cred-1" }), {
@@ -424,11 +433,67 @@ test("session-start.mjs: mirrors MEMINI_API_KEY to the credentials file and reti
   assert.equal(parsed.credentials[key].api_key, "tok-abc");
   if (process.platform !== "win32") assert.equal(statSync(p).mode & 0o777, 0o600, "bearer at rest must be 0600");
 
-  // Env truth changed (key unset): the stored copy must not outlive it —
-  // runHook strips MEMINI_API_KEY from the inherited env, so this spawn
-  // genuinely has none.
+  // The IDE/GUI-launcher regression: runHook strips MEMINI_API_KEY, so this
+  // spawn genuinely has none. An ABSENT var is not a revocation — deleting
+  // here is what stranded every other session's MCP reconnect on a bare 401.
+  const before = readFileSync(p, "utf8");
   await runHook("session-start.mjs", JSON.stringify({ cwd: __dirname, session_id: "cred-2" }), base);
-  assert.equal(existsSync(p), false, "unset key retires the stored credential");
+  assert.equal(existsSync(p), true, "a keyless session must not retire the stored credential");
+  assert.equal(readFileSync(p, "utf8"), before, "and must not rewrite the file either");
+});
+
+test("session-start.mjs: an explicitly EMPTY MEMINI_API_KEY retires the stored credential, loudly", async () => {
+  const config = freshConfig();
+  const base = { MEMINI_BASE_URL: DEAD_URL, XDG_CACHE_HOME: freshCache(), XDG_CONFIG_HOME: config };
+  await runHook("session-start.mjs", JSON.stringify({ cwd: __dirname, session_id: "cred-3" }), {
+    ...base,
+    MEMINI_API_KEY: "tok-abc",
+  });
+  const p = join(config, "memini", "credentials");
+  assert.equal(existsSync(p), true, "precondition: the bearer was mirrored");
+
+  // Set-but-empty is the deliberate "forget this bearer", and unlike before it
+  // says so on stderr instead of silently emptying the file.
+  const { stderr } = await runHook("session-start.mjs", JSON.stringify({ cwd: __dirname, session_id: "cred-4" }), {
+    ...base,
+    MEMINI_API_KEY: "",
+  });
+  assert.equal(existsSync(p), false, "an explicit empty key retires the stored credential");
+  assert.match(stderr, /retired the stored MCP credential/, "retirement must not be silent");
+});
+
+test("session-start.mjs: a FAILED retirement says so, instead of leaving the bearer on disk silently", async (t) => {
+  // Permission-based failure injection: only meaningful for a non-root POSIX
+  // user, since root ignores the mode bits entirely.
+  if (process.platform === "win32" || process.getuid?.() === 0) {
+    t.skip("needs POSIX directory permissions as a non-root user");
+    return;
+  }
+  const config = freshConfig();
+  const base = { MEMINI_BASE_URL: DEAD_URL, XDG_CACHE_HOME: freshCache(), XDG_CONFIG_HOME: config };
+  await runHook("session-start.mjs", JSON.stringify({ cwd: __dirname, session_id: "cred-5" }), {
+    ...base,
+    MEMINI_API_KEY: "tok-abc",
+  });
+  const dir = join(config, "memini");
+  const p = join(dir, "credentials");
+  assert.equal(existsSync(p), true, "precondition: the bearer was mirrored");
+
+  // r-x: the file still READS (so the retirement finds an entry to delete) but
+  // the unlink/rename cannot happen — exactly the EPERM/EACCES shape that used
+  // to fail in silence because "" is falsy.
+  chmodSync(dir, 0o500);
+  try {
+    const { stderr } = await runHook("session-start.mjs", JSON.stringify({ cwd: __dirname, session_id: "cred-6" }), {
+      ...base,
+      MEMINI_API_KEY: "",
+    });
+    assert.equal(existsSync(p), true, "precondition: the failure really did leave the bearer on disk");
+    assert.match(stderr, /could NOT be retired/, "a failed retirement must be loud");
+    assert.match(stderr, /still on disk/, "and must say the old bearer is still live");
+  } finally {
+    chmodSync(dir, 0o700); // restore so temp-dir cleanup works
+  }
 });
 
 test("session-start.mjs: reachable handshake but a null briefing does NOT claim emptiness", async () => {
@@ -4246,6 +4311,105 @@ test("status.mjs --json: degraded flag set when the server is unreachable", asyn
   // Every setting is a built-in default (or an env override); none from the server.
   assert.ok(r.settings.every((s) => s.source !== "server"), "no server-sourced settings when degraded");
   assert.ok(r.warnings.some((w) => w.code === "degraded-mode"), "degraded-mode warning present");
+});
+
+// Credential-file drift. Claude Code >= 2.1.238 strips credential env vars from
+// plugin headersHelpers, so MCP tool calls authenticate from the mirrored
+// ~/.config/memini/credentials while these hooks read MEMINI_API_KEY. When the
+// two disagree, status has to say so — otherwise the only symptom is a bare 401
+// that Claude Code renders as a bogus "Dynamic Client Registration rejected".
+//
+// `setup(url, configHome)` runs after the mock server has a port (the credential
+// entry is keyed by base URL) and returns extra env for the run — including,
+// crucially, whether MEMINI_API_KEY is absent, empty, or set (runCommand strips
+// it from the base env, so absence is reproducible).
+async function statusReport(setup) {
+  const configHome = freshConfig();
+  const { url, close } = await startMockServer(
+    withHandshake(mkHS({ namespace: "proj" }), (req, res) => {
+      res.statusCode = 404;
+      res.end();
+    }),
+  );
+  try {
+    const extra = (await setup?.(url, configHome)) || {};
+    const { stdout } = await runCommand(
+      "status.mjs",
+      ["--json"],
+      {
+        MEMINI_BASE_URL: url,
+        XDG_CACHE_HOME: freshCache(),
+        XDG_CONFIG_HOME: configHome,
+        CLAUDE_PROJECT_DIR: __dirname,
+        ...extra,
+      },
+      __dirname,
+    );
+    return JSON.parse(stdout);
+  } finally {
+    await close();
+  }
+}
+
+async function seedStoredKey(url, configHome, key) {
+  const { syncStoredApiKey } = await import("./_client.gen.mjs");
+  const r = syncStoredApiKey(url, key, { XDG_CONFIG_HOME: configHome });
+  assert.equal(r.ok, true, "credential seed must succeed");
+}
+
+test("status.mjs --json: cred-file-stale when MEMINI_API_KEY disagrees with the credential file", async () => {
+  // No entry at all: the MCP headersHelper sends no bearer and gets a 401.
+  const missing = await statusReport(() => ({ MEMINI_API_KEY: "sk-env" }));
+  const w = missing.warnings.find((x) => x.code === "cred-file-stale");
+  assert.ok(w, "an env key with no stored entry is drift");
+  assert.equal(w.level, "warn");
+  assert.ok(w.fix, "the warning must carry a fix");
+  assert.ok(!missing.warnings.some((x) => x.code === "cred-file-only"), "stale and file-only are mutually exclusive");
+
+  // A stale entry: MCP keeps authenticating as whoever the old key was.
+  const different = await statusReport(async (url, configHome) => {
+    await seedStoredKey(url, configHome, "sk-stored-old");
+    return { MEMINI_API_KEY: "sk-env" };
+  });
+  const w2 = different.warnings.find((x) => x.code === "cred-file-stale");
+  assert.ok(w2, "a different stored key is drift too");
+  // Status output is meant to be pasteable into an issue: never echo a bearer.
+  const text = `${w2.message} ${w2.fix}`;
+  assert.ok(!text.includes("sk-env") && !text.includes("sk-stored-old"), "no secrets in the warning");
+});
+
+test("status.mjs --json: cred-file-only info when only the credential file has a key", async () => {
+  const r = await statusReport(async (url, configHome) => {
+    await seedStoredKey(url, configHome, "sk-stored");
+    return {}; // MEMINI_API_KEY stays unset — runCommand strips it.
+  });
+  const w = r.warnings.find((x) => x.code === "cred-file-only");
+  assert.ok(w, "a file-only credential is worth reporting");
+  assert.equal(w.level, "info", "this is informational: MCP works, only this env's REST calls are anonymous");
+  assert.ok(w.fix);
+  assert.ok(!r.warnings.some((x) => x.code === "cred-file-stale"));
+});
+
+test("status.mjs --json: no credential warning when env and file agree, or when the key is explicitly empty", async () => {
+  const matching = await statusReport(async (url, configHome) => {
+    await seedStoredKey(url, configHome, "sk-same");
+    return { MEMINI_API_KEY: "sk-same" };
+  });
+  assert.ok(
+    !matching.warnings.some((x) => x.code === "cred-file-stale" || x.code === "cred-file-only"),
+    "a mirrored credential is the healthy case",
+  );
+
+  // An explicit empty MEMINI_API_KEY is the documented retirement signal, not
+  // drift: the caller is deliberately running without a key.
+  const emptied = await statusReport(async (url, configHome) => {
+    await seedStoredKey(url, configHome, "sk-stored");
+    return { MEMINI_API_KEY: "" };
+  });
+  assert.ok(
+    !emptied.warnings.some((x) => x.code === "cred-file-stale" || x.code === "cred-file-only"),
+    'explicit "" is deliberate retirement, so neither code fires',
+  );
 });
 
 // ─── pure helpers (buffers / digest / transcript / env parsing) ───────────

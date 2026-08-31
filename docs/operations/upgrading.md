@@ -211,6 +211,16 @@ The intent is that low-quality durable debris (a bulk import, mostly) ages out o
 
 Set `MEMINI_DEMOTE_AFTER=0` to restore the old behaviour, or raise it (for example `1440h`, 60 days) if you want the sweep but on a longer horizon.
 
+### MCP is stateless now, and reads its headers per request
+
+Two changes to how `/mcp` is served. Both take effect the moment you restart into the new version; neither has a variable to turn it off.
+
+**MCP sessions no longer live in server memory.** The streamable-HTTP transport runs stateless, so restarting stops invalidating anything: an `Mcp-Session-Id` minted before the restart is ignored instead of being answered with "session not found", and connected agents are no longer pushed through a reconnect — the path where a client whose bearer has gone missing ends up in the OAuth-discovery dead end described in [production.md](production.md#troubleshooting-dynamic-client-registration-rejected-http-404). Rolling a Deployment is now uneventful for the clients attached to it.
+
+The one visible consequence is on the other end of the endpoint: a bare `GET /mcp` — the standalone SSE stream a client may open for server-initiated messages — now answers `405` with `Allow: POST`. That is the spec-correct response from a stateless server, and it costs memini nothing, because memini is a tool-only server that never pushes on that stream. A strict client will log the 405 where it previously held an open connection. Tool calls (`POST /mcp`) are unaffected.
+
+**`X-Memini-Namespace` and `X-Memini-Home` are now resolved per request**, instead of being frozen when the session was created. The old freezing was a bug: requests 2..N of a session inherited the first request's namespace, home, and identity, so a client that changed namespace mid-session kept writing to the old one, and a different valid key reusing a session ID inherited the first key's identity and read-only flag. If you have out-of-tree tooling that sets those headers only on the first request of a session, send them on every request — they now apply where they are sent.
+
 ## The admin UI now requires signing in
 
 Before this release, when `MEMINI_API_KEY` was set the server **injected** that key into the UI shell (a `<meta name="memini-token">` tag) so the same-origin browser authenticated with no interaction. That injection is **removed**. The served shell is now credential-free (it never contains `MEMINI_API_KEY`), and the UI is a real login: you paste an API key once per browser, it is verified against `GET /v1/self`, and it persists in that browser's `localStorage`.

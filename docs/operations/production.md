@@ -86,6 +86,24 @@ Consequences worth planning around:
 
 The full rotation ceremony (overlap window, client rollout, revocation) is in [access-control.md](../guides/access-control.md#step-5-the-rotation-ceremony).
 
+## Troubleshooting: Dynamic Client Registration rejected (HTTP 404)
+
+Someone on a Claude Code client reports that memini's MCP tools keep vanishing, and `/mcp` says:
+
+> Failed to reconnect to plugin:memini:memini: Dynamic Client Registration rejected (HTTP 404): {}
+
+**What it means, in one line: no valid bearer reached the server.** memini has never spoken OAuth, and none of this is an OAuth problem. The sequence is that a request to `/mcp` arrived without a token the server accepts, the server answered `401`, and the client did what MCP clients do with an unauthenticated endpoint — it tried OAuth discovery, POSTing Dynamic Client Registration to `/register` and fetching the `.well-known` metadata documents. memini implements no OAuth server behind those paths, so the visible error names the last thing that failed rather than the thing that broke. The `401` is the signal; the registration 404 is the echo.
+
+The server answers those probes so the echo carries the diagnosis: `POST /register` and `GET` on `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`, and `/.well-known/openid-configuration` (plus the RFC 9728 path-suffixed variants) all return a JSON 404 whose message says memini does not use OAuth, that no valid bearer arrived, and where to look next. Claude Code surfaces that body verbatim, so on a current server the error text explains itself. A literal `{}` body means either an older server or something in front of memini answering on its behalf.
+
+Two things this is _not_, anymore. Restarting the server no longer strands anyone: `/mcp` is served statelessly, so a stale `Mcp-Session-Id` from before the restart is ignored instead of 404'd, and rolling a Deployment no longer pushes every client through the reconnect path where this failure lives. And a client whose environment simply lacks `MEMINI_API_KEY` no longer deletes the stored credential the other sessions authenticate with — see the plugin's [tri-state retirement rules](../../plugin/README.md#retiring-the-stored-credential-is-a-three-state-decision).
+
+Causes, in the order they are worth checking:
+
+1. **The client's MCP header helper lost the bearer.** This is the common one, and it is entirely client-side: Claude Code ≥ 2.1.238 runs a plugin's `headersHelper` without inherited credential env vars, so the hooks stay authenticated (briefings and recall keep working) while MCP calls arrive with no `Authorization` at all. The user-visible tell is exactly that asymmetry — reads healthy, tools gone. Have them run `/memini:status`: a `cred-file-stale` warning or a `cred-file-only` note tells you which side of the mirror is empty. Full explanation and fix: [plugin/README.md § Claude Code 2.1.238 and credential env vars](../../plugin/README.md#claude-code-21238-and-credential-env-vars).
+2. **A reverse proxy is stripping or rewriting `Authorization`.** Usually an auth-handling layer in front — oauth2-proxy, an ingress with its own auth annotation, or a leftover `proxy_set_header Authorization ""` in a copied template — consuming the header instead of passing it through. Bisect it with the same token against both paths: `curl -sS -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $MEMINI_API_KEY" https://memini.example.com/v1/self` versus the same request against `http://127.0.0.1:8080/v1/self` on the server itself. `200` on loopback and `401` through the proxy is a conclusive verdict on the proxy. The rest of the proxy configuration this page recommends — including the `/mcp` buffering and timeout settings that break the stream in subtler ways — is under [TLS and reverse proxies](#tls-and-reverse-proxies).
+3. **The key is wrong, revoked, or rotated away.** `curl -sS -H "Authorization: Bearer <key>" https://memini.example.com/v1/self` from the operator's own machine settles it: a `401` means the server does not accept the token, full stop. Remember that keys from `MEMINI_API_KEYS_FILE` are read once at boot — editing the Secret without restarting leaves the old key working and the new one rejected, which presents to the user as exactly this error. See [API keys: rotation means restart](#api-keys-rotation-means-restart).
+
 ## Metrics topology
 
 The Helm chart lays the surface out across three ports; the same split applies to any deployment shape:

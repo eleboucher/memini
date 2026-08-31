@@ -69,6 +69,26 @@ test("empty key retires the entry; an emptied file is removed", () => {
   assert.equal(syncStoredApiKey("https://b.example.com", "", env).action, "skipped", "nothing to retire");
 });
 
+test("an UNSET key (undefined) keeps the stored entry — a keyless session must not retire it", () => {
+  const env = freshEnv();
+  syncStoredApiKey("https://a.example.com", "tok-a", env);
+  const p = credentialsPath(env);
+  const before = fs.readFileSync(p, "utf8");
+  const r = syncStoredApiKey("https://a.example.com", undefined, env);
+  assert.equal(r.ok, true);
+  assert.equal(r.action, "kept");
+  assert.equal(readStoredApiKey("https://a.example.com", env), "tok-a", "the bearer other sessions rely on survives");
+  assert.equal(fs.readFileSync(p, "utf8"), before, "no write at all, not even a rewrite of the same bytes");
+});
+
+test("an UNSET key with nothing stored: kept, and no file is created", () => {
+  const env = freshEnv();
+  const r = syncStoredApiKey("https://a.example.com", undefined, env);
+  assert.equal(r.ok, true);
+  assert.equal(r.action, "kept");
+  assert.equal(fs.existsSync(credentialsPath(env)), false, "undefined does no I/O whatsoever");
+});
+
 test("applyCredentialFallback: env wins, file fills, none when neither", () => {
   const env = freshEnv();
   syncStoredApiKey("http://localhost:8080", "tok-file", env);

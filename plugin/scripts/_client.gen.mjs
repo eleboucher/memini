@@ -368,6 +368,7 @@ function readStoredApiKey(baseUrl, env = process.env) {
 }
 function syncStoredApiKey(baseUrl, apiKey, env = process.env) {
   const p = credentialsPath(env);
+  if (apiKey === void 0) return { ok: true, path: p, action: "kept" };
   try {
     const file = readFile(p);
     const key = credentialKey(baseUrl);

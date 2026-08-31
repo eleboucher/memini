@@ -20,7 +20,7 @@ Start with the recipe closest to what you are doing, then reach for the referenc
 | Understand where memories live                 | [Namespaces](how-it-works/namespaces.md)                                                    |
 | Understand which namespaces a search reads     | [Scopes](scopes.md)                                                                         |
 | See a full worked example                      | [Examples](examples/README.md)                                                              |
-| Run it in production (TLS, sizing, Postgres)   | [Production](operations/production.md)                                                      |
+| Run it in production (TLS, Postgres, MCP 404s) | [Production](operations/production.md)                                                      |
 | Back up or restore the store                   | [Backup and restore](operations/backup-restore.md)                                          |
 | Hack on memini itself                          | [Contributing](../CONTRIBUTING.md)                                                          |
 | Check what a word means exactly                | [Glossary](glossary.md)                                                                     |
@@ -79,7 +79,7 @@ Generated from the code, so it cannot drift.
 ## Operations
 
 - [Deployment](operations/deployment.md). Prebuilt artifacts, Compose, single container, systemd, Kubernetes.
-- [Production](operations/production.md). TLS and reverse proxies, sizing, Postgres operations, key rotation, metrics.
+- [Production](operations/production.md). TLS and reverse proxies, sizing, Postgres operations, key rotation, metrics, and the OAuth-shaped 404 an MCP client shows when its bearer goes missing.
 - [Backup and restore](operations/backup-restore.md). Live-store backups per backend, and the restore invariants that trip people.
 - [Upgrading](operations/upgrading.md). Removed settings, and the two that refuse the boot.
 - [Web UI](operations/web-ui.md). What each view is for, and the one security caveat that matters.
