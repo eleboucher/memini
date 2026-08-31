@@ -24,8 +24,8 @@ importers:
         specifier: latest
         version: 2026.7.1-2(@aws-sdk/credential-provider-node@3.972.64)(@opentelemetry/api@1.9.0)(@smithy/signature-v4@5.6.3)
       tsx:
-        specifier: ^4.23.4
-        version: 4.23.12
+        specifier: ^4.23.13
+        version: 4.23.13
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
@@ -45,8 +45,8 @@ importers:
         specifier: ^0.28.1
         version: 0.28.2
       tsx:
-        specifier: ^4.23.4
-        version: 4.23.12
+        specifier: ^4.23.13
+        version: 4.23.13
       typebox:
         specifier: 1.3.17
         version: 1.3.17
@@ -1748,8 +1748,8 @@ packages:
     resolution: {integrity: sha512-XuELoRpMR+sq8fuWwX7P0bcj+PRNiicOKDEb3fGNURhxWVyykCi9BNq7c4uVz7h7P0sj8qgBsr5SWS6yBClq3g==}
     engines: {node: '>=16'}
 
-  tsx@4.23.12:
-    resolution: {integrity: sha512-FDf4L4sYzKtzWYhU/Xm0AQFdTjdIxNo9ElTf2mxXM6k8YMHXzYUe4yODVaXP4V9uMFbVg8c0qyBccK2OOxb45Q==}
+  tsx@4.23.13:
+    resolution: {integrity: sha512-BL5MGkRln6aDYhb0xbQlEAGw743BaZYWdbWtdJOBriYJboKgUUYCadFp2/FpBBZquBC/ezNBn7wMMPx7FDZUDw==}
     engines: {node: '>=18.0.0'}
     hasBin: true
 
@@ -3681,7 +3681,7 @@ snapshots:
 
   tslog@4.10.2: {}
 
-  tsx@4.23.12:
+  tsx@4.23.13:
     dependencies:
       esbuild: 0.28.2
     optionalDependencies:
