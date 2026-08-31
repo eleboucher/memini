@@ -1415,6 +1415,200 @@ func TestHTTPHandlerHomeHeaderMergesDurable(t *testing.T) {
 	}
 }
 
+// mcpPost drives HTTPHandler with a single raw JSON-RPC body, the way a
+// stateless MCP client does. It exists because the three stateless tests below
+// need control over the Mcp-Session-Id header, which
+// mcpsdk.StreamableClientTransport manages for itself — a client can never send
+// a session ID the handler did not mint, which is exactly the case under test.
+func mcpPost(h http.Handler, body, ns, token, sessionID string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Accept", "application/json, text/event-stream")
+	r.Header.Set("MCP-Protocol-Version", "2025-06-18")
+	if ns != "" {
+		r.Header.Set("X-Memini-Namespace", ns)
+	}
+	if token != "" {
+		r.Header.Set("Authorization", "Bearer "+token)
+	}
+	if sessionID != "" {
+		r.Header.Set("Mcp-Session-Id", sessionID)
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	return w
+}
+
+// rpcResponse decodes the single JSON-RPC message in a Streamable HTTP
+// response. The handler keeps the SDK's default SSE framing, so the body is
+// "event: message\ndata: {...}"; a plain-JSON body is accepted too so this
+// keeps working if the framing is ever switched.
+func rpcResponse(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	decode := func(s string) map[string]any {
+		var msg map[string]any
+		if err := json.Unmarshal([]byte(s), &msg); err != nil {
+			t.Fatalf("decode JSON-RPC response %q (code=%d): %v", s, w.Code, err)
+		}
+		return msg
+	}
+	for line := range strings.SplitSeq(w.Body.String(), "\n") {
+		if data, ok := strings.CutPrefix(strings.TrimRight(line, "\r"), "data:"); ok {
+			return decode(strings.TrimSpace(data))
+		}
+	}
+	return decode(strings.TrimSpace(w.Body.String()))
+}
+
+// toolResult digs the CallToolResult out of a JSON-RPC response, reporting the
+// isError flag and the flattened text content.
+func toolResult(t *testing.T, msg map[string]any) (isError bool, text string) {
+	t.Helper()
+	if e, ok := msg["error"]; ok {
+		t.Fatalf("JSON-RPC error instead of a tool result: %+v", e)
+	}
+	var res struct {
+		IsError bool `json:"isError"`
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	b, err := json.Marshal(msg["result"])
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	if err := json.Unmarshal(b, &res); err != nil {
+		t.Fatalf("unmarshal tool result %s: %v", b, err)
+	}
+	var sb strings.Builder
+	for _, c := range res.Content {
+		sb.WriteString(c.Text)
+	}
+	return res.IsError, sb.String()
+}
+
+// TestHTTPHandlerStatelessIgnoresStaleSessionID is the restart-storm regression
+// test. MCP sessions live only in the handler's memory, so every server restart
+// invalidated every client's session ID; a stateful handler answers the next
+// request with 404 "session not found", and Claude Code's recovery path from
+// that 404 is an OAuth/DCR probe that ends in the cryptic "Dynamic Client
+// Registration rejected (HTTP 404)". Serving stateless means a session ID that
+// outlived the process it was minted in is simply ignored.
+func TestHTTPHandlerStatelessIgnoresStaleSessionID(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "stateless.db"), dims)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := service.New(st, embedtest.New(dims))
+	h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "secret", nil, nil)
+
+	w := mcpPost(h, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, "", "secret", "bogus-after-restart")
+	if w.Code != http.StatusOK {
+		t.Fatalf("tools/list with a stale session ID: got %d %q, want 200 — a session ID from "+
+			"before a restart must be ignored, not 404'd", w.Code, strings.TrimSpace(w.Body.String()))
+	}
+	msg := rpcResponse(t, w)
+	if e, ok := msg["error"]; ok {
+		t.Fatalf("tools/list returned a JSON-RPC error: %+v", e)
+	}
+	var res struct {
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	b, _ := json.Marshal(msg["result"])
+	if err := json.Unmarshal(b, &res); err != nil {
+		t.Fatalf("unmarshal tools/list result %s: %v", b, err)
+	}
+	if len(res.Tools) == 0 {
+		t.Fatal("tools/list answered with no tools; the stale-session request must be served normally")
+	}
+}
+
+// TestHTTPHandlerPerRequestNamespace is the stale-identity regression test.
+// Under the old stateful handler getServer ran once per session, so requests
+// 2..N of a session silently reused request 1's namespace no matter what
+// X-Memini-Namespace said. Stateless resolves identity per request: two writes
+// on one client session ID land in the two namespaces their headers name.
+func TestHTTPHandlerPerRequestNamespace(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlitevec.Open(ctx, filepath.Join(t.TempDir(), "per-req-ns.db"), dims)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := service.New(st, embedtest.New(dims))
+	h := meminimcp.HTTPHandler(svc, "X-Memini-Namespace", "default", "X-Memini-Home", "", nil, nil)
+
+	// One client, one session ID, two different namespace headers.
+	const sessionID = "one-client-session"
+	write := func(ns, content string) {
+		t.Helper()
+		body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":`+
+			`{"name":"memory_remember","arguments":{"content":%q,"tier":"semantic"}}}`, content)
+		w := mcpPost(h, body, ns, "", sessionID)
+		if w.Code != http.StatusOK {
+			t.Fatalf("remember in %s: got %d %q, want 200", ns, w.Code, strings.TrimSpace(w.Body.String()))
+		}
+		if isErr, text := toolResult(t, rpcResponse(t, w)); isErr {
+			t.Fatalf("remember in %s errored: %s", ns, text)
+		}
+	}
+	write("ns-a", "the ns-a deploy pipeline runs on forgejo")
+	write("ns-b", "the ns-b deploy pipeline runs on woodpecker")
+
+	for _, tc := range []struct{ ns, want string }{
+		{"ns-a", "the ns-a deploy pipeline runs on forgejo"},
+		{"ns-b", "the ns-b deploy pipeline runs on woodpecker"},
+	} {
+		got, err := svc.List(ctx, service.ListInput{Namespace: tc.ns})
+		if err != nil {
+			t.Fatalf("list %s: %v", tc.ns, err)
+		}
+		if len(got) != 1 || got[0].Content != tc.want {
+			t.Fatalf("namespace %s holds %d memories %+v, want exactly the write its own "+
+				"X-Memini-Namespace header addressed (%q)", tc.ns, len(got), got, tc.want)
+		}
+	}
+}
+
+// TestHTTPHandlerPerRequestReadOnly pins the authorization half of the same
+// stale-identity bug: under the old stateful handler a read-only credential
+// that reused a read-write session's ID inherited that session's privileges,
+// because the read-only middleware was wired once when the session's server was
+// built. Per-request servers re-derive it from the credential on THIS request.
+func TestHTTPHandlerPerRequestReadOnly(t *testing.T) {
+	h := newReadOnlyMCP(t) // "tok-bot" is read-write, "tok-ci" is read-only
+	const sessionID = "shared-session"
+	body := func(content string) string {
+		return fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":`+
+			`{"name":"memory_remember","arguments":{"content":%q,"tier":"semantic"}}}`, content)
+	}
+
+	w := mcpPost(h, body("a read-write write that opens the session"), "acme", "tok-bot", sessionID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("read-write write: got %d %q, want 200", w.Code, strings.TrimSpace(w.Body.String()))
+	}
+	if isErr, text := toolResult(t, rpcResponse(t, w)); isErr {
+		t.Fatalf("read-write write was refused: %s", text)
+	}
+
+	w = mcpPost(h, body("a read-only write riding the same session ID"), "acme", "tok-ci", sessionID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("read-only write: got %d %q, want 200 with a refusal in the tool result",
+			w.Code, strings.TrimSpace(w.Body.String()))
+	}
+	isErr, text := toolResult(t, rpcResponse(t, w))
+	if !isErr {
+		t.Fatalf("a read-only key reusing a read-write session ID must still be refused writes, got %q", text)
+	}
+	if !strings.Contains(strings.ToLower(text), "read-only") {
+		t.Fatalf("refusal must say why; got %q", text)
+	}
+}
+
 // TestRememberPositiveTTL pins the seconds→duration conversion: a positive
 // ttl_seconds must produce an expiry (the full-args test only covers the
 // never-expire case).
