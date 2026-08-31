@@ -17,9 +17,12 @@ import (
 // produced "Dynamic Client Registration rejected (HTTP 404): {}".
 //
 // Keep it one short, searchable line: it is rendered in a client error toast.
-const oauthProbeMessage = "memini does not use OAuth (no valid bearer token reached the server). " +
-	`memini plugin: run /memini:status and see plugin README "Claude Code 2.1.238 and credential env vars"; ` +
-	"behind a proxy: check it forwards the Authorization header"
+// The README section title is single-quoted on purpose — this string is
+// delivered inside a JSON body, where double quotes come back out as \" and
+// clutter the one line the user actually reads.
+const oauthProbeMessage = "memini does not use OAuth (no valid bearer reached the server). " +
+	"plugin: run /memini:status, see plugin README 'Claude Code 2.1.238 and credential env vars'; " +
+	"behind a proxy: check it forwards Authorization"
 
 // handleOAuthProbe answers every OAuth discovery/registration probe with a
 // 404 carrying oauthProbeMessage. 404 (not 501/400) is deliberate: it is what

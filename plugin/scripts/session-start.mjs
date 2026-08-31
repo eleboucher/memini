@@ -229,12 +229,18 @@ async function main() {
   // so a rotated-away bearer is not replayed forever.
   const envApiKey = process.env.MEMINI_API_KEY;
   const cred = syncStoredApiKey(ctx.boot.baseUrl, envApiKey);
-  // Failure is loud when a key exists: silently skipping the write recreates
-  // the exact reads-work-writes-don't failure this exists to end.
-  if (!cred.ok && envApiKey) {
+  // Failure is loud whenever the env asked for a change — set OR set-but-empty.
+  // Testing truthiness would swallow the worse half: a FAILED retirement leaves
+  // the old bearer on disk while the user believes they revoked it. Absent
+  // (undefined) is the only case with nothing to report, because nothing was
+  // attempted.
+  if (!cred.ok && envApiKey !== undefined) {
     console.error(
-      `[memini] could not store the API key for the MCP headersHelper at ${cred.path} (${cred.error}); ` +
-        `on Claude Code >= 2.1.238 memini's MCP tools may fail to authenticate`,
+      envApiKey === ""
+        ? `[memini] the stored API key at ${cred.path} could NOT be retired (${cred.error}); ` +
+            `the previous bearer is still on disk, so memini's MCP tools will keep using it`
+        : `[memini] could not store the API key for the MCP headersHelper at ${cred.path} (${cred.error}); ` +
+            `on Claude Code >= 2.1.238 memini's MCP tools may fail to authenticate`,
     );
   }
   // Deleting the bearer other sessions authenticate with is too consequential

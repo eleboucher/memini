@@ -21,7 +21,16 @@ import assert from "node:assert/strict";
 import { spawn, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, basename } from "node:path";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  readdirSync,
+  statSync,
+  chmodSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import http from "node:http";
@@ -451,6 +460,40 @@ test("session-start.mjs: an explicitly EMPTY MEMINI_API_KEY retires the stored c
   });
   assert.equal(existsSync(p), false, "an explicit empty key retires the stored credential");
   assert.match(stderr, /retired the stored MCP credential/, "retirement must not be silent");
+});
+
+test("session-start.mjs: a FAILED retirement says so, instead of leaving the bearer on disk silently", async (t) => {
+  // Permission-based failure injection: only meaningful for a non-root POSIX
+  // user, since root ignores the mode bits entirely.
+  if (process.platform === "win32" || process.getuid?.() === 0) {
+    t.skip("needs POSIX directory permissions as a non-root user");
+    return;
+  }
+  const config = freshConfig();
+  const base = { MEMINI_BASE_URL: DEAD_URL, XDG_CACHE_HOME: freshCache(), XDG_CONFIG_HOME: config };
+  await runHook("session-start.mjs", JSON.stringify({ cwd: __dirname, session_id: "cred-5" }), {
+    ...base,
+    MEMINI_API_KEY: "tok-abc",
+  });
+  const dir = join(config, "memini");
+  const p = join(dir, "credentials");
+  assert.equal(existsSync(p), true, "precondition: the bearer was mirrored");
+
+  // r-x: the file still READS (so the retirement finds an entry to delete) but
+  // the unlink/rename cannot happen — exactly the EPERM/EACCES shape that used
+  // to fail in silence because "" is falsy.
+  chmodSync(dir, 0o500);
+  try {
+    const { stderr } = await runHook("session-start.mjs", JSON.stringify({ cwd: __dirname, session_id: "cred-6" }), {
+      ...base,
+      MEMINI_API_KEY: "",
+    });
+    assert.equal(existsSync(p), true, "precondition: the failure really did leave the bearer on disk");
+    assert.match(stderr, /could NOT be retired/, "a failed retirement must be loud");
+    assert.match(stderr, /still on disk/, "and must say the old bearer is still live");
+  } finally {
+    chmodSync(dir, 0o700); // restore so temp-dir cleanup works
+  }
 });
 
 test("session-start.mjs: reachable handshake but a null briefing does NOT claim emptiness", async () => {
