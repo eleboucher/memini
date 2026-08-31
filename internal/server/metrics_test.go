@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -23,6 +24,45 @@ func TestMetricsOnMainPortByDefault(t *testing.T) {
 	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("/metrics on main router = %d, want 200", rec.Code)
+	}
+}
+
+// With an API key configured, /metrics on the main port sits behind the same
+// bearer token as /v1. The 401 must advertise the scheme (RFC 6750) and carry
+// a JSON body under a matching content type — a bare 401 with a text/plain
+// content type on a JSON body is what sends MCP clients into OAuth discovery
+// and then fails them when they try to parse the answer.
+func TestMetricsBearerAuth(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := server.New(server.Options{Addr: ":0", ShutdownTimeout: time.Second, APIKey: "s3cr3t"}, log, prometheus.NewRegistry())
+
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("/metrics without a token = %d, want 401", rec.Code)
+	}
+	if got := rec.Header().Get("WWW-Authenticate"); got != `Bearer realm="memini"` {
+		t.Errorf("WWW-Authenticate = %q, want `Bearer realm=\"memini\"`", got)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal body %q: %v", rec.Body.String(), err)
+	}
+	if body.Error == "" {
+		t.Errorf("body = %q, want an {\"error\": …} message", rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Authorization", "Bearer s3cr3t")
+	srv.Router().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/metrics with a valid token = %d, want 200", rec.Code)
 	}
 }
 

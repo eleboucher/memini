@@ -492,11 +492,15 @@ func HTTPHandlerWithAuth(svc *service.Service, nsHeader, defaultNS, homeHeader s
 		p, ok, err := keyAuth.Authenticate(r.Context(), token)
 		if err != nil {
 			slog.ErrorContext(r.Context(), "mcp auth: key store lookup failed", "err", err)
-			http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+			httputil.Error(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		if !ok {
-			http.Error(w, `{"error":"missing or invalid bearer token"}`, http.StatusUnauthorized)
+			// RFC 6750: say which scheme the resource wants. Clients already fall
+			// into OAuth discovery on a bare 401 (that is the bug this branch is
+			// about), so naming Bearer only makes the existing ask explicit.
+			w.Header().Set("WWW-Authenticate", `Bearer realm="memini"`)
+			httputil.Error(w, http.StatusUnauthorized, "missing or invalid bearer token")
 			return
 		}
 		// Record the actor for the access log (the outer request logger's
@@ -517,7 +521,7 @@ func HTTPHandlerWithAuth(svc *service.Service, nsHeader, defaultNS, homeHeader s
 		// header", not an error.
 		if v := httputil.NormalizeNamespace(r.Header.Get(nsHeader)); v != "" {
 			if err := httputil.ValidateNamespace(v); err != nil {
-				http.Error(w, `{"error":"invalid namespace header"}`, http.StatusBadRequest)
+				httputil.Error(w, http.StatusBadRequest, "invalid namespace header")
 				return
 			}
 		}
@@ -530,7 +534,7 @@ func HTTPHandlerWithAuth(svc *service.Service, nsHeader, defaultNS, homeHeader s
 			// error, and one that survives normalization must be a valid namespace.
 			if v := httputil.NormalizeNamespace(r.Header.Get(homeHeader)); v != "" {
 				if err := httputil.ValidateNamespace(v); err != nil {
-					http.Error(w, `{"error":"invalid home header"}`, http.StatusBadRequest)
+					httputil.Error(w, http.StatusBadRequest, "invalid home header")
 					return
 				}
 			}

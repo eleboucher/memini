@@ -547,12 +547,24 @@ func TestHTTPHandlerAuth(t *testing.T) {
 		return w
 	}
 
-	if got := req("").Code; got != http.StatusUnauthorized {
-		t.Errorf("no token: got %d, want 401", got)
+	// A 401 must advertise the scheme (RFC 6750) and carry a JSON body with a
+	// matching content type: a bare 401 is what sends Claude Code into OAuth
+	// discovery, and a text/plain content type on a JSON body is what makes the
+	// failure unparseable when it gets there.
+	assert401Shape := func(t *testing.T, label string, w *httptest.ResponseRecorder) {
+		t.Helper()
+		if got := w.Code; got != http.StatusUnauthorized {
+			t.Errorf("%s: got %d, want 401", label, got)
+		}
+		if got := w.Header().Get("WWW-Authenticate"); got != `Bearer realm="memini"` {
+			t.Errorf("%s: WWW-Authenticate = %q, want `Bearer realm=\"memini\"`", label, got)
+		}
+		if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+			t.Errorf("%s: Content-Type = %q, want application/json", label, ct)
+		}
 	}
-	if got := req("wrong").Code; got != http.StatusUnauthorized {
-		t.Errorf("bad token: got %d, want 401", got)
-	}
+	assert401Shape(t, "no token", req(""))
+	assert401Shape(t, "bad token", req("wrong"))
 	if got := req("secret").Code; got == http.StatusUnauthorized {
 		t.Errorf("good token: got 401, want it to pass auth")
 	}
