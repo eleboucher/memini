@@ -26,9 +26,12 @@
  * dir, holding only memini's key (never other apps' credentials), and the
  * hardening targeted inheritance BREADTH (every plugin seeing every
  * credential), not secrets-at-rest. Entries are keyed by base URL so a
- * bearer stored for one server is never sent to another, and an unset
- * MEMINI_API_KEY retires the stored copy on the next session start, so the
- * file tracks the env rather than outliving it.
+ * bearer stored for one server is never sent to another, and retirement is
+ * tri-state (see syncStoredApiKey): an explicitly EMPTY MEMINI_API_KEY
+ * retires the stored copy so the file tracks the env rather than outliving
+ * it, while a merely ABSENT one leaves it alone — a session launched from a
+ * keyless env (an IDE/GUI launcher) must not delete the credential every
+ * other session's MCP reconnects depend on.
  */
 
 import fs from "node:fs";
@@ -84,23 +87,41 @@ export function readStoredApiKey(baseUrl: string, env: Record<string, string | u
 export interface SyncResult {
   ok: boolean;
   path: string;
-  action: "written" | "removed" | "unchanged" | "skipped";
+  action: "written" | "removed" | "unchanged" | "kept" | "skipped";
   error?: string;
 }
 
 /**
- * Mirror the env truth into the file: a non-empty `apiKey` upserts the entry
- * for `baseUrl`; an empty one retires it (deleting the file outright when it
- * holds nothing else, so no empty husk lingers). Atomic tmp+rename write at
- * 0600 in a 0700 dir. Never throws — callers get {ok:false, error} instead,
- * because this runs inside hooks that must not fail the agent.
+ * Mirror the env truth into the file. `apiKey` is TRI-STATE, and callers must
+ * pass the raw env value (`env.MEMINI_API_KEY`) rather than a value collapsed
+ * through `|| ""`:
+ *
+ * - a non-empty string upserts the entry for `baseUrl`;
+ * - `""` (the var is set but empty) RETIRES it — a deliberate "forget this
+ *   bearer", deleting the file outright when it holds nothing else so no
+ *   empty husk lingers;
+ * - `undefined` (the var is absent) KEEPS whatever is stored, doing no I/O.
+ *
+ * The `undefined` case is not a nicety: one session launched from an env
+ * without the var (an IDE/GUI launcher, or Codex running the same hook) used
+ * to silently delete the credential that every other session's MCP reconnect
+ * falls back to — which surfaced as a bare 401, OAuth discovery, and the
+ * cryptic "Dynamic Client Registration rejected (HTTP 404)". Absence of a key
+ * is not evidence of revocation; only an explicit empty value is.
+ *
+ * Atomic tmp+rename write at 0600 in a 0700 dir. Never throws — callers get
+ * {ok:false, error} instead, because this runs inside hooks that must not
+ * fail the agent.
  */
 export function syncStoredApiKey(
   baseUrl: string,
-  apiKey: string,
+  apiKey: string | undefined,
   env: Record<string, string | undefined> = process.env,
 ): SyncResult {
   const p = credentialsPath(env);
+  // Absent var: nothing to mirror and nothing to revoke. Return before any
+  // I/O so a keyless session cannot even fail on a read.
+  if (apiKey === undefined) return { ok: true, path: p, action: "kept" };
   try {
     const file = readFile(p);
     const key = credentialKey(baseUrl);
