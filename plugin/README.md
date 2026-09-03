@@ -122,7 +122,7 @@ codex plugin marketplace add eleboucher/memini
 codex plugin add memini@memini
 ```
 
-The bundled server targets `http://localhost:8080/mcp`. Start the server (bare `memini`), set `MEMINI_API_KEY` when needed, review and trust the plugin commands in `/hooks`, then start a new thread. Codex uses `hooks/hooks.codex.json` with `${PLUGIN_ROOT}` and native `Bash`, `apply_patch`, and MCP matchers; Claude uses `hooks/hooks.claude.json`. Each manifest names its own file, and neither is at `hooks/hooks.json`: Claude Code loads that default path _in addition to_ the manifest path, so a file there would run twice under Claude.
+The bundled server targets `http://localhost:8080/mcp`. Start the server (bare `memini`), set `MEMINI_API_KEY` when needed, review and trust the plugin commands in `/hooks`, then start a new thread. Codex uses `hooks/hooks.codex.json` with `${PLUGIN_ROOT}` and native `Bash`, `apply_patch`, and MCP matchers; Claude uses `hooks/hooks.claude.json`. The Codex file's top level accepts only `description` and `hooks`, and each handler pairs `command` with a `commandWindows` that calls `node` directly, because Codex runs hooks through `cmd.exe /C` on Windows and cannot execute `scripts/run.sh` there. Each manifest names its own file, and neither is at `hooks/hooks.json`: Claude Code loads that default path _in addition to_ the manifest path, so a file there would run twice under Claude.
 
 For a remote URL, disable the bundled MCP server and use the `config.toml` recipe in [`integrations/codex/`](../integrations/codex/). Codex does not support Claude-style URL interpolation in the bundled MCP file.
 
@@ -140,7 +140,7 @@ plugin/
 ├── .codex-plugin/plugin.json    # Codex manifest
 ├── .mcp.codex.json              # Codex local HTTP MCP server
 ├── hooks/
-│   ├── hooks.codex.json         # Codex wiring (${PLUGIN_ROOT})
+│   ├── hooks.codex.json         # Codex wiring (${PLUGIN_ROOT}, commandWindows)
 │   └── hooks.claude.json        # full Claude Code event set
 ├── scripts/
 │   ├── _shared.mjs              # resolveProject, postJSON/Search/Remember, session buffer + digest

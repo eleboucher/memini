@@ -12,6 +12,8 @@ global plugin path:
 "<skill-directory>/../../scripts/run.sh" "<skill-directory>/../../scripts/status.mjs"
 ```
 
+On Windows, `run.sh` is not executable; run `node "<skill-directory>/../../scripts/status.mjs"` instead.
+
 Pass `--json` when machine-readable output is requested. This command is
 read-only and redacts secrets. Lead with the effective namespace and warnings;
 explain degraded mode, a global `MEMINI_NAMESPACE` pin, and cwd split-brain in

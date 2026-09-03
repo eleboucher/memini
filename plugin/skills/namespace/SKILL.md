@@ -11,6 +11,8 @@ Resolve this skill's directory and run:
 "<skill-directory>/../../scripts/run.sh" "<skill-directory>/../../scripts/namespace.mjs" <arguments>
 ```
 
+On Windows, `run.sh` is not executable; run `node "<skill-directory>/../../scripts/namespace.mjs"` instead.
+
 No arguments shows the namespace and provenance. A namespace argument pins this
 project server-side; `--clear` removes its pin; `--migrate` migrates legacy
 overrides. Pins require a reachable server and beat `MEMINI_NAMESPACE`.

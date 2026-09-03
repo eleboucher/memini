@@ -82,6 +82,29 @@ test("Codex wiring is documented-event-only and Claude retains SessionEnd", () =
   assert.match(JSON.stringify(codex), /PLUGIN_ROOT/);
 });
 
+test("Codex hooks file carries only the two keys HooksFile accepts", () => {
+  // codex-rs/config/src/hook_config.rs marks HooksFile #[serde(deny_unknown_fields)],
+  // so a "//" comment key aborts the whole file with "unknown field //, expected
+  // description or hooks". Claude Code tolerates unknown keys; Codex does not.
+  const codex = JSON.parse(fs.readFileSync(path.join(root, "hooks", "hooks.codex.json")));
+  for (const key of Object.keys(codex))
+    assert.ok(key === "description" || key === "hooks", `unknown top-level key ${key}`);
+});
+
+test("every Codex handler has a Windows command that bypasses run.sh", () => {
+  // Codex runs hook commands through `cmd.exe /C` on Windows, which cannot execute
+  // the POSIX run.sh; commandWindows overrides `command` under cfg!(windows).
+  const codex = JSON.parse(fs.readFileSync(path.join(root, "hooks", "hooks.codex.json")));
+  const handlers = Object.values(codex.hooks).flat().flatMap((group) => group.hooks);
+  assert.equal(handlers.length, 6);
+  for (const handler of handlers) {
+    const script = handler.command.match(/([a-z-]+\.mjs)"$/)?.[1];
+    assert.ok(script, `no script in ${handler.command}`);
+    assert.equal(handler.commandWindows, `node "\${PLUGIN_ROOT}/scripts/${script}"`);
+    assert.doesNotMatch(handler.commandWindows, /run\.sh/);
+  }
+});
+
 test("each host loads only its own hooks file", () => {
   // Claude Code always loads hooks/hooks.json on top of the manifest path, so a
   // file there would run twice under Claude — once with ${PLUGIN_ROOT} unset.

@@ -1,5 +1,5 @@
 {
-  "//": "Codex-native lifecycle wiring. Installing does not trust hooks automatically; review /hooks before enabling them.",
+  "description": "Codex-native lifecycle wiring. Installing does not trust hooks automatically; review /hooks before enabling them.",
   "hooks": {
     "SessionStart": [
       {
@@ -7,6 +7,7 @@
           {
             "type": "command",
             "command": "\"${PLUGIN_ROOT}/scripts/run.sh\" \"${PLUGIN_ROOT}/scripts/session-start.mjs\"",
+            "commandWindows": "node \"${PLUGIN_ROOT}/scripts/session-start.mjs\"",
             "statusMessage": "memini: loading session context"
           }
         ]
@@ -17,7 +18,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/scripts/run.sh\" \"${PLUGIN_ROOT}/scripts/user-prompt-submit.mjs\""
+            "command": "\"${PLUGIN_ROOT}/scripts/run.sh\" \"${PLUGIN_ROOT}/scripts/user-prompt-submit.mjs\"",
+            "commandWindows": "node \"${PLUGIN_ROOT}/scripts/user-prompt-submit.mjs\""
           }
         ]
       }
@@ -27,7 +29,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/scripts/run.sh\" \"${PLUGIN_ROOT}/scripts/stop.mjs\""
+            "command": "\"${PLUGIN_ROOT}/scripts/run.sh\" \"${PLUGIN_ROOT}/scripts/stop.mjs\"",
+            "commandWindows": "node \"${PLUGIN_ROOT}/scripts/stop.mjs\""
           }
         ]
       }
@@ -37,7 +40,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/scripts/run.sh\" \"${PLUGIN_ROOT}/scripts/pre-compact.mjs\""
+            "command": "\"${PLUGIN_ROOT}/scripts/run.sh\" \"${PLUGIN_ROOT}/scripts/pre-compact.mjs\"",
+            "commandWindows": "node \"${PLUGIN_ROOT}/scripts/pre-compact.mjs\""
           }
         ]
       }
@@ -48,7 +52,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/scripts/run.sh\" \"${PLUGIN_ROOT}/scripts/pre-tool-use.mjs\""
+            "command": "\"${PLUGIN_ROOT}/scripts/run.sh\" \"${PLUGIN_ROOT}/scripts/pre-tool-use.mjs\"",
+            "commandWindows": "node \"${PLUGIN_ROOT}/scripts/pre-tool-use.mjs\""
           }
         ]
       }
@@ -59,7 +64,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/scripts/run.sh\" \"${PLUGIN_ROOT}/scripts/post-tool-use.mjs\""
+            "command": "\"${PLUGIN_ROOT}/scripts/run.sh\" \"${PLUGIN_ROOT}/scripts/post-tool-use.mjs\"",
+            "commandWindows": "node \"${PLUGIN_ROOT}/scripts/post-tool-use.mjs\""
           }
         ]
       }
