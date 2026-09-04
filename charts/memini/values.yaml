@@ -385,3 +385,30 @@ grafanaDashboards:
   enabled: false
   # -- grafana_dashboard_folder annotation; controls where it lands in Grafana.
   folder: memini
+# -- Bundled Prometheus alerting rules, rendered as a PrometheusRule for the
+# prometheus-operator (a custom chart key, not part of the common library).
+# Requires the `monitoring.coreos.com` CRDs. The rules watch memini's own
+# degradation counters: both conditions keep serving requests, so they surface
+# as quietly worse recall rather than as errors.
+prometheusRule:
+  # -- Render the bundled alerting rules as a PrometheusRule.
+  enabled: false
+  # -- Extra labels for the PrometheusRule. Set the selector your Prometheus CR's
+  # `ruleSelector` matches on, e.g. `release: kube-prometheus-stack`.
+  labels: {}
+  rules:
+    # -- Recall fell back to unranked order because the reranker or embedder was
+    # unavailable.
+    recallDegraded:
+      enabled: true
+      # -- increase() lookback.
+      window: 30m
+      severity: warning
+    # -- An embed backend is returning errors.
+    embedErrors:
+      enabled: true
+      # -- increase() lookback.
+      window: 30m
+      # -- Hold time before firing; embed errors are often a brief blip.
+      for: 10m
+      severity: warning

@@ -937,6 +937,87 @@
       "title": "podMonitor",
       "type": "object"
     },
+    "prometheusRule": {
+      "description": "Bundled Prometheus alerting rules, rendered as a PrometheusRule for the\nprometheus-operator (a custom chart key, not part of the common library).\nRequires the `monitoring.coreos.com` CRDs. The rules watch memini's own\ndegradation counters: both conditions keep serving requests, so they surface\nas quietly worse recall rather than as errors.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Render the bundled alerting rules as a PrometheusRule.",
+          "title": "enabled",
+          "type": "boolean"
+        },
+        "labels": {
+          "description": "Extra labels for the PrometheusRule. Set the selector your Prometheus CR's\n`ruleSelector` matches on, e.g. `release: kube-prometheus-stack`.",
+          "required": [],
+          "title": "labels",
+          "type": "object"
+        },
+        "rules": {
+          "properties": {
+            "embedErrors": {
+              "description": "An embed backend is returning errors.",
+              "properties": {
+                "enabled": {
+                  "default": true,
+                  "title": "enabled",
+                  "type": "boolean"
+                },
+                "for": {
+                  "default": "10m",
+                  "description": "Hold time before firing; embed errors are often a brief blip.",
+                  "title": "for",
+                  "type": "string"
+                },
+                "severity": {
+                  "default": "warning",
+                  "title": "severity",
+                  "type": "string"
+                },
+                "window": {
+                  "default": "30m",
+                  "description": "increase() lookback.",
+                  "title": "window",
+                  "type": "string"
+                }
+              },
+              "required": [],
+              "title": "embedErrors",
+              "type": "object"
+            },
+            "recallDegraded": {
+              "description": "Recall fell back to unranked order because the reranker or embedder was\nunavailable.",
+              "properties": {
+                "enabled": {
+                  "default": true,
+                  "title": "enabled",
+                  "type": "boolean"
+                },
+                "severity": {
+                  "default": "warning",
+                  "title": "severity",
+                  "type": "string"
+                },
+                "window": {
+                  "default": "30m",
+                  "description": "increase() lookback.",
+                  "title": "window",
+                  "type": "string"
+                }
+              },
+              "required": [],
+              "title": "recallDegraded",
+              "type": "object"
+            }
+          },
+          "required": [],
+          "title": "rules",
+          "type": "object"
+        }
+      },
+      "required": [],
+      "title": "prometheusRule",
+      "type": "object"
+    },
     "rawResources": {
       "description": "Allows for the inclusion of raw Kubernetes resources that are not supported\nby the chart otherwise​",
       "required": [],
