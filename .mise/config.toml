@@ -2,7 +2,7 @@
 # `mise install` provisions the toolchain; `mise run <task>` runs a task;
 # `mise tasks` lists them. CI uses the same tasks so local == CI.
 [tools]
-go = "1.27.0"
+go = "1.27.1"
 golangci-lint = "2.13.2"
 lefthook = "2.1.12"
 helm = "4.2.4"
