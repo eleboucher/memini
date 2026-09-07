@@ -5,8 +5,9 @@
 //   1. Read the agent's SessionStart payload from stdin (cwd, session_id, ...).
 //   2. Resolve the project namespace from data.cwd.
 //   3. Fetch the layered briefing (pinned / durable facts / procedures /
-//      recent episodic) and write a short context block to stdout. Claude
-//      Code and Codex both prepend stdout to the agent's context window.
+//      recent episodic) and write a short context block to stdout in the
+//      host's envelope: plain text (Claude Code), hookSpecificOutput (Codex),
+//      or additional_context (Cursor).
 //
 // Per-section caps and a token ceiling are honored from MEMINI_INJECT_*
 // env vars (see _shared.mjs). Defaults match the pre-budget behavior so the
@@ -17,6 +18,10 @@ import {
   parseJSON,
   getSessionContext,
   getBriefing,
+  hostKind,
+  hookCacheKey,
+  payloadSessionId,
+  payloadCwd,
   cleanStaleBuffers,
   writePluginRoot,
   writeSessionCwd,
@@ -41,9 +46,11 @@ import {
   DEBUG,
 } from "./_shared.mjs";
 
-function emitContext(context) {
+function emitContext(context, host) {
   if (!context) return;
-  if (process.env.PLUGIN_ROOT) {
+  if (host === "cursor") {
+    process.stdout.write(JSON.stringify({ additional_context: context }));
+  } else if (host === "codex") {
     process.stdout.write(
       JSON.stringify({
         hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: context },
@@ -205,15 +212,16 @@ async function main() {
   warnRemovedVars(process.env);
 
   const payload = parseJSON(await readStdin()) || {};
-  const sessionId = payload.session_id || payload.sessionId;
-  const cwd = payload.cwd || process.cwd();
+  const host = hostKind(payload);
+  const sessionId = payloadSessionId(payload);
+  const cwd = payloadCwd(payload);
 
   // The one hook that does the live network round-trip: resolve the namespace
   // and behavioral settings via a fresh handshake (allowNetwork "always"),
   // writing the per-session cache every other hook reads. On failure this
   // degrades to local derivation and writes no cache — the ABSENCE of a cache
   // entry is the degraded signal Pre/PostToolUse depend on.
-  let ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "always", timeoutMs: 3000 });
+  let ctx = await getSessionContext({ cwd, ppid: hookCacheKey(payload), allowNetwork: "always", timeoutMs: 3000 });
   let project = ctx.namespace;
 
   // Mirror the API key into the 0600 credentials file the MCP headersHelper
@@ -259,7 +267,9 @@ async function main() {
   // this is how it finds its way home on platforms where it cannot read the
   // parent's cwd directly. The directory, not the namespace: the helper
   // re-resolves (from the same per-session handshake cache) on every connect.
-  writeSessionCwd(process.ppid, cwd);
+  // Claude-only: its sole reader is that helper, and under Cursor's per-hook
+  // parent pids each write would orphan a pid-*.cwd crumb until GC.
+  if (host === "claude") writeSessionCwd(process.ppid, cwd);
 
   // Hygiene: drop session buffers left behind by sessions that never ended.
   cleanStaleBuffers(STALE_BUFFER_MS);
@@ -287,7 +297,7 @@ async function main() {
       // headersHelper (all of which read the per-session cache this rewrites)
       // run on the pin's namespace THIS session — not next session, after a
       // silent one-session gap where writes land where recall doesn't look.
-      ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "always", timeoutMs: 3000 });
+      ctx = await getSessionContext({ cwd, ppid: hookCacheKey(payload), allowNetwork: "always", timeoutMs: 3000 });
       project = ctx.namespace;
     }
   }
@@ -352,7 +362,7 @@ async function main() {
     const note = b
       ? `<memini-context project="${project}" read-only>(no stored memories yet for this project)</memini-context>`
       : "";
-    emitContext(note + directive);
+    emitContext(note + directive, host);
     return;
   }
 
@@ -373,7 +383,7 @@ async function main() {
     // Skip the unchanged briefing; the directive var already encodes what this
     // fire source owes the context (nothing on resume — the transcript replay
     // carries the original injection — a fresh directive on clear).
-    emitContext(directive);
+    emitContext(directive, host);
     // Telemetry beacon AFTER the stdout payload: the whole briefing was
     // withheld as unchanged, so report the item count and no injected ids.
     // Best-effort and awaited — see postInjected.
@@ -435,7 +445,7 @@ async function main() {
   // be emitted, or a session with only blank-content memories is silently told
   // nothing to save.
   if (blocks.length === 0) {
-    emitContext(directive);
+    emitContext(directive, host);
     return;
   }
 
@@ -544,10 +554,10 @@ async function main() {
     writeInjectedState(sessionId, injectedState);
   }
 
-  // Use the host-native Codex envelope. Claude Code continues to receive the
+  // Use the host-native envelope. Claude Code continues to receive the
   // plain stdout format it has always consumed.
   const emitted = lines.join("\n");
-  emitContext(emitted);
+  emitContext(emitted, host);
   if (DEBUG) {
     console.error(
       `[memini] SessionStart injected ${lines.length - 2} lines ` +

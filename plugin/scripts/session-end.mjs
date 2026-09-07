@@ -9,6 +9,9 @@ import {
   readStdin,
   parseJSON,
   getSessionContext,
+  hookCacheKey,
+  payloadSessionId,
+  payloadCwd,
   postRemember,
   postSupersede,
   readSessionEvents,
@@ -23,10 +26,10 @@ import {
 
 async function main() {
   const payload = parseJSON(await readStdin()) || {};
-  const sessionId = payload.session_id || payload.sessionId || "unknown";
-  const cwd = payload.cwd || process.cwd();
+  const sessionId = payloadSessionId(payload) || "unknown";
+  const cwd = payloadCwd(payload);
   const reason = payload.reason || "unknown";
-  const ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "on-miss", timeoutMs: 2000 });
+  const ctx = await getSessionContext({ cwd, ppid: hookCacheKey(payload), allowNetwork: "on-miss", timeoutMs: 2000 });
   const project = ctx.namespace;
 
   const digest = buildSessionDigest(readSessionEvents(sessionId), project);
@@ -74,7 +77,7 @@ async function main() {
   // record behind, and those are bounded by their TTLs (SESSION_CWD_TTL_MS /
   // HANDSHAKE_TTL_MS).
   deleteSessionCwd(process.ppid);
-  deleteCachedHandshake(process.ppid);
+  deleteCachedHandshake(hookCacheKey(payload));
 }
 
 main().catch((e) => {

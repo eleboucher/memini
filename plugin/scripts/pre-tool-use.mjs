@@ -19,6 +19,8 @@ import {
   readStdin,
   parseJSON,
   getSessionContext,
+  hostKind,
+  hookCacheKey,
   postSearch,
   readToolCall,
   fitByTokens,
@@ -71,7 +73,7 @@ async function main() {
   // cache ONLY — allowNetwork "never" means this hook makes ZERO network calls
   // to resolve. A live handshake here would add latency to every tool call and
   // reintroduce the PR-#111 cross-session race the cache exists to prevent.
-  const ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "never" });
+  const ctx = await getSessionContext({ cwd, ppid: hookCacheKey(payload), allowNetwork: "never" });
   const project = ctx.namespace;
 
   if (DEBUG)
@@ -351,13 +353,20 @@ async function main() {
   if (degradedNote) out.push(`[memini: ${escapeMeminiTags(degradedNote)}]`);
   out.push("</memini-pretool>");
   // PreToolUse plain stdout is NOT shown to the model (it goes to the debug
-  // log) — context must be returned as JSON additionalContext.
+  // log) — context must be returned as JSON. Claude Code and Codex take the
+  // hookSpecificOutput envelope. Cursor's preToolUse has no additional_context
+  // output; the recall rides agent_message instead (documented only for deny,
+  // so best-effort on allow) alongside an explicit allow.
   const context = out.join("\n");
-  process.stdout.write(
-    JSON.stringify({
-      hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: context },
-    }),
-  );
+  if (hostKind(payload) === "cursor") {
+    process.stdout.write(JSON.stringify({ permission: "allow", agent_message: context }));
+  } else {
+    process.stdout.write(
+      JSON.stringify({
+        hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: context },
+      }),
+    );
+  }
   if (DEBUG) {
     console.error(
       `[memini] PreToolUse injected ${out.length - 2} lines for ${files.slice(0, 3).length} file(s) ` +

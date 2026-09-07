@@ -1,0 +1,16 @@
+{
+  "name": "memini",
+  "owner": {
+    "name": "memini maintainers"
+  },
+  "metadata": {
+    "description": "Persistent memory for AI coding agents"
+  },
+  "plugins": [
+    {
+      "name": "memini",
+      "source": "./plugin",
+      "description": "Persistent memory for AI coding agents via the memini memory service. Hooks capture tool usage and inject prior context at session start; bundled MCP tools and skills manage memories."
+    }
+  ]
+}

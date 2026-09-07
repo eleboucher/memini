@@ -1,0 +1,12 @@
+{
+  "conversation_id": "cursor-tools",
+  "hook_event_name": "postToolUse",
+  "cursor_version": "1.7.2",
+  "workspace_roots": ["."],
+  "tool_name": "Shell",
+  "tool_use_id": "tool-shell",
+  "tool_input": { "command": "go test ./..." },
+  "tool_output": "{\"exitCode\":0,\"stdout\":\"ok\"}",
+  "duration": 1234,
+  "cwd": "."
+}

@@ -22,6 +22,10 @@ import {
   readStdin,
   parseJSON,
   getSessionContext,
+  hostKind,
+  hookCacheKey,
+  payloadSessionId,
+  payloadCwd,
   writeSessionCwd,
   postRemember,
   readSessionEvents,
@@ -139,28 +143,34 @@ async function captureTurn(payload, sessionId, project, ctx) {
 
 async function main() {
   const payload = parseJSON(await readStdin()) || {};
-  const codexHost = Boolean(process.env.PLUGIN_ROOT);
-  const sessionId = payload.session_id || payload.sessionId || "unknown";
+  // Transcript features (turn capture, inline <memory> scrape, the auto-save
+  // nudge) stay Claude-only: Codex's transcript is outside its stable hook
+  // contract, Cursor's is not Claude Code's JSONL, and Cursor's stop
+  // followup_message would auto-submit the nudge as a user message.
+  const claudeHost = hostKind(payload) === "claude";
+  const sessionId = payloadSessionId(payload) || "unknown";
   // A server write tagged session_id:"unknown" shares one exclusion bucket
   // with every other unknown-id session (pre-tool-use excludes by exact
   // session_id match), so cross-session rows would echo into each other. No
   // identity → no server writes; local buffer bookkeeping is unaffected.
   const hasSessionIdentity = sessionId !== "unknown";
-  const cwd = payload.cwd || process.cwd();
+  const cwd = payloadCwd(payload);
 
   // Cache-first namespace + settings: a valid per-session handshake is reused;
   // only a miss (a session started while the server was down, or a 10-min TTL
   // lapse) pays a live handshake. Stop fires once per assistant turn, so this
   // is also what keeps the shared cache fresh for the network-free hot-path
   // hooks (Pre/PostToolUse) through a long session.
-  const ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "on-miss", timeoutMs: 2000 });
+  const ctx = await getSessionContext({ cwd, ppid: hookCacheKey(payload), allowNetwork: "on-miss", timeoutMs: 2000 });
   const project = ctx.namespace;
 
   // Refresh this session's recorded project dir. Stop fires once per assistant
   // turn, so any session actually in use stays comfortably inside
   // SESSION_CWD_TTL_MS — which is what lets the TTL be short enough to bound
-  // pid reuse without ever expiring under a live session.
-  writeSessionCwd(process.ppid, cwd);
+  // pid reuse without ever expiring under a live session. Claude-only: its
+  // reader is the Claude MCP headersHelper, and Cursor's per-hook parent pids
+  // would litter one orphan crumb per turn.
+  if (claudeHost) writeSessionCwd(process.ppid, cwd);
 
   const digest = buildSessionDigest(readSessionEvents(sessionId), project);
 
@@ -184,7 +194,7 @@ async function main() {
   // for <memory> blocks in the reply text. New sessions save via the memory_remember
   // MCP tool directly; any block that still shows up here is persisted as a durable
   // semantic fact so nothing is lost.
-  if (!codexHost && ctx.setting("inline_extract").value && hasSessionIdentity && payload.transcript_path) {
+  if (claudeHost && ctx.setting("inline_extract").value && hasSessionIdentity && payload.transcript_path) {
     const transcript = readTranscript(payload.transcript_path);
     const assistantTexts = extractAssistantText(transcript);
     const allBlocks = [];
@@ -204,17 +214,14 @@ async function main() {
     }
   }
 
-  // Codex transcript storage is intentionally not part of its stable hook
-  // contract. Do not parse transcript_path even if an experimental build sends
-  // one; Codex retains rolling activity checkpoints without transcript capture.
-  if (!codexHost) await captureTurn(payload, sessionId, project, ctx);
+  if (claudeHost) await captureTurn(payload, sessionId, project, ctx);
 
-  const reason = codexHost ? null : autoSaveReasonFor(payload, sessionId, project, ctx);
+  const reason = claudeHost ? autoSaveReasonFor(payload, sessionId, project, ctx) : null;
   if (reason) process.stdout.write(JSON.stringify({ decision: "block", reason }));
-  else if (codexHost) process.stdout.write("{}");
+  else if (!claudeHost) process.stdout.write("{}");
 }
 
 main().catch((e) => {
   if (DEBUG) console.error("[memini] Stop error:", e);
-  if (process.env.PLUGIN_ROOT) process.stdout.write("{}");
+  if (hostKind() !== "claude") process.stdout.write("{}");
 });

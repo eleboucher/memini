@@ -1,0 +1,8 @@
+{
+  "conversation_id": "cursor-prompt",
+  "hook_event_name": "beforeSubmitPrompt",
+  "cursor_version": "1.7.2",
+  "workspace_roots": ["."],
+  "prompt": "What did we decide about authentication?",
+  "attachments": []
+}

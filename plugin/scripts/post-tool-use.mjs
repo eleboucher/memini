@@ -17,6 +17,7 @@ import {
   readToolCall,
   appendSessionEvent,
   getSessionContext,
+  hookCacheKey,
   readInjectedState,
   writeInjectedState,
   recordInjected,
@@ -24,17 +25,31 @@ import {
 } from "./_shared.mjs";
 
 const FILE_KEYS = ["filePath", "file_path", "path", "file", "pattern"];
-const RECORDED = new Set(["edit", "multiedit", "write", "bash", "notebookedit", "agent", "task", "apply_patch"]);
+// Lowercased, host-agnostic: Claude Code's Edit/Bash, Codex's apply_patch,
+// Cursor's Shell/Delete/StrReplace all land here.
+const RECORDED = new Set([
+  "edit",
+  "multiedit",
+  "write",
+  "bash",
+  "notebookedit",
+  "agent",
+  "task",
+  "apply_patch",
+  "shell",
+  "delete",
+  "strreplace",
+]);
 
 // memini's own MCP READ tools: what they return lands in the transcript like
 // any tool output, so their memory ids feed the cross-surface injected state
 // (see _shared.mjs) and the auto-recall surfaces stop re-injecting what the
-// model already pulled explicitly. Matches both MCP namings — a plain server
-// ("mcp__memini__memory_recall") and the plugin-scoped form
-// ("mcp__plugin_memini_memini__memory_recall"). Write tools (remember/update)
-// are not tracked: their results carry no content, and the content came from
-// the model, which already has it.
-const MEMORY_READ_TOOL = /^mcp__.*memini.*__memory_(recall|briefing|get)$/i;
+// model already pulled explicitly. Matches all known MCP namings — a plain
+// server ("mcp__memini__memory_recall"), the plugin-scoped form
+// ("mcp__plugin_memini_memini__memory_recall"), and Cursor's "MCP:<tool>"
+// form. Write tools (remember/update) are not tracked: their results carry no
+// content, and the content came from the model, which already has it.
+const MEMORY_READ_TOOL = /^(?:mcp__.*memini.*__|MCP:)memory_(recall|briefing|get)$/i;
 
 // parseToolResult digs the JSON payload out of the harness's tool_response:
 // MCP results arrive as {content:[{type:"text", text:"<json>"}]}, but a plain
@@ -123,7 +138,7 @@ async function main() {
   // to the sentinel, so content-aware resurfacing survives.
   if (MEMORY_READ_TOOL.test(String(toolName || ""))) {
     if (!sessionId) return;
-    const ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "never" });
+    const ctx = await getSessionContext({ cwd, ppid: hookCacheKey(payload), allowNetwork: "never" });
     if (!ctx.setting("inject_dedupe").value) return;
     const ids = new Set();
     collectMemoryIds(parseToolResult(payload.tool_response ?? payload.tool_output), ids);
@@ -176,7 +191,7 @@ async function main() {
   // harmless, because the digest is re-gated at Stop/PreCompact/SessionEnd (which
   // won't write it if session_digest is actually off) and the nudge only reads
   // the buffer locally.
-  const ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "never" });
+  const ctx = await getSessionContext({ cwd, ppid: hookCacheKey(payload), allowNetwork: "never" });
   const digestOn = ctx.setting("session_digest").value;
   const autoSaveOn = ctx.setting("auto_save").value;
   const minEvents = Math.max(0, ctx.setting("auto_save_min_events").value ?? 3);
