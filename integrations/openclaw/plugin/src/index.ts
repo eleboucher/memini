@@ -2044,11 +2044,17 @@ const plugin: {
     // before_prompt_build/agent_end (the coarse api.registerHook is for internal
     // events like message:sent). Warn rather than silently drop memory if a build
     // somehow lacks it (eleboucher/memini#26).
-    const addHook = (name: string, handler: any) => {
-      if (typeof api.on === "function") api.on(name, handler);
+    // OpenClaw resolves a hook's timeout as
+    // policy.timeouts[hookName] ?? policy.timeoutMs ?? opts.timeoutMs, falling back to
+    // its own per-hook defaults (before_prompt_build: 15s, agent_end: 30s). Passing the
+    // configured timeout as opts makes timeout_ms the default for both hooks while
+    // leaving host config free to override it (eleboucher/memini#93).
+    const addHook = (name: string, handler: any, opts?: { timeoutMs?: number }) => {
+      if (typeof api.on === "function") api.on(name, handler, opts);
       else api.logger.warn?.(`memini: api.on unavailable; ${name} hook not registered`);
     };
-    addHook("before_prompt_build", recallHandler);
+    const hookTimeoutMs = Number(sessionCtx.cfg.timeout_ms) || undefined;
+    addHook("before_prompt_build", recallHandler, { timeoutMs: hookTimeoutMs });
 
     const captureHandler = async (event: any, hookCtx: any) => {
       const live = await sessionLive(sessionCtx);
@@ -2086,7 +2092,7 @@ const plugin: {
       // Record the captured ID so the next recall can drop it.
       if (writeResult?.id) rememberCaptured(ns, String(writeResult.id));
     };
-    addHook("agent_end", captureHandler);
+    addHook("agent_end", captureHandler, { timeoutMs: hookTimeoutMs });
 
     // Opt-in explicit tools, registered after the memory slot above. Best-effort:
     // a failure (e.g. typebox unavailable) is logged and leaves the slot working.
