@@ -1,0 +1,8 @@
+{
+  "conversation_id": "cursor-tools",
+  "hook_event_name": "preCompact",
+  "cursor_version": "1.7.2",
+  "workspace_roots": ["."],
+  "trigger": "auto",
+  "context_usage_percent": 85
+}

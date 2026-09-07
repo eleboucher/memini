@@ -1,6 +1,6 @@
 # memini plugin
 
-A Claude Code / Codex / opencode plugin that wires the [memini](../) memory service into the agent's lifecycle. It captures what the agent does, surfaces prior context at session start, and ships skills that teach the agent _when_ to use the memory tools.
+A Claude Code / Codex / Cursor / opencode plugin that wires the [memini](../) memory service into the agent's lifecycle. It captures what the agent does, surfaces prior context at session start, and ships skills that teach the agent _when_ to use the memory tools.
 
 ## What it does
 
@@ -14,7 +14,7 @@ A Claude Code / Codex / opencode plugin that wires the [memini](../) memory serv
 | `PreCompact`       | Before context compaction, distills the buffer into an episodic emergency checkpoint (Claude Code only)                                                                                            |
 | `SessionEnd`       | Distills the buffer into one durable episodic **session digest**                                                                                                                                   |
 
-The table describes the full Claude lifecycle. Codex uses the same shared scripts for its documented events but omits `SessionEnd` and all transcript-dependent behavior; see [Codex CLI](#codex-cli) for the stable differences.
+The table describes the full Claude lifecycle. Codex uses the same shared scripts for its documented events but omits `SessionEnd` and all transcript-dependent behavior; see [Codex CLI](#codex-cli) for the stable differences. Cursor wires all seven events in its native hook format and shares Codex's transcript-related limitations; see [Cursor](#cursor).
 
 ### Auto-save (Stop)
 
@@ -26,7 +26,7 @@ The nudge is **event-aware** — it interrupts only when there is likely somethi
 - **Trivial window?** If fewer than `MEMINI_AUTO_SAVE_MIN_EVENTS` (default 3) state-changing tool calls were buffered since that reset, the nudge is **deferred** — the counter keeps growing, not resetting — until the interval **doubles** (2×), at which point it fires a discussion-variant nudge (there may be decisions or preferences worth saving even with no tool activity).
 - **Real activity?** When it fires after real work, the nudge **names the actual files edited and commands run** in that window as anchors, so the agent knows what to look back over.
 
-It still nudges at most once per interval even if the agent saves nothing, and never blocks when the transcript is unreadable. On by default; set `MEMINI_AUTO_SAVE=0` to disable, or `MEMINI_AUTO_SAVE_MIN_EVENTS=0` to drop the activity gate and nudge on the message interval alone. Codex sends no transcript path, so the nudge is inert there.
+It still nudges at most once per interval even if the agent saves nothing, and never blocks when the transcript is unreadable. On by default; set `MEMINI_AUTO_SAVE=0` to disable, or `MEMINI_AUTO_SAVE_MIN_EVENTS=0` to drop the activity gate and nudge on the message interval alone. Codex sends no transcript path, and Cursor's stop follow-up would auto-submit the nudge as a user message, so the nudge stays Claude-only.
 
 ### Session capture: buffer → digest
 
@@ -128,6 +128,37 @@ For a remote URL, disable the bundled MCP server and use the `config.toml` recip
 
 Codex has no reliable final-session event, and Memini does not parse Codex's unstable transcript format. Rolling Stop checkpoints and PreCompact recovery work, but final SessionEnd digests, transcript-based turn capture, legacy inline extraction, and auto-save nudges remain Claude-only.
 
+### Cursor
+
+Install locally by symlinking the plugin directory, then reload the window (**Developer: Reload Window**) and confirm under Customize → Plugins:
+
+```sh
+ln -s "$PWD" ~/.cursor/plugins/local/memini   # run from the plugin/ directory
+```
+
+Teams can instead import the repository as a marketplace (Dashboard → Plugins → Import from Repo); the repo root carries `.cursor-plugin/marketplace.json`.
+
+Cursor uses `hooks/hooks.cursor.json` — the same seven events under Cursor's native camelCase names, commands addressed via `${CURSOR_PLUGIN_ROOT}` — and `.mcp.cursor.json`, a static MCP registration pointing at a fixed `http://localhost:8080/mcp`. Plugin-bundled MCP config does **not** interpolate `${env:...}` (the literal placeholder would be sent as the bearer), so the bundled entry carries no headers. For a remote server or one with authentication, disable the plugin's bundled MCP entry under Customize → MCP and add your own to `~/.cursor/mcp.json`, where `${env:...}` interpolation is supported:
+
+```json
+{
+  "mcpServers": {
+    "memini": {
+      "url": "https://memini.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:MEMINI_API_KEY}",
+        "X-Memini-Namespace": "${env:MEMINI_NAMESPACE}",
+        "X-Memini-Home": "${env:MEMINI_HOME}"
+      }
+    }
+  }
+}
+```
+
+The hooks read `MEMINI_BASE_URL` / `MEMINI_API_KEY` from the environment as usual; a Cursor launched from a shell that exports them uses the same remote server for recall and capture.
+
+Behavior differences from Claude (mechanism and rationale in [docs/how-it-works](../../docs/how-it-works/plugin.md#known-limitations)): `beforeSubmitPrompt` has no documented context-injection output (per-prompt recall is emitted best-effort); `preToolUse` carries recall in `agent_message`; transcript-dependent features — turn capture, inline `<memory>` extraction, the auto-save nudge — stay Claude-only; `sessionEnd` fires on window close, so the final digest can be skipped (rolling Stop checkpoints bound the loss). The plugin's `commands/` are not registered — they invoke scripts via `${CLAUDE_PLUGIN_ROOT}`, which Cursor does not expand; use the identically named skills instead.
+
 ### opencode
 
 opencode doesn't use the Claude Code hook protocol; it has its own plugin system, shipped separately at [integrations/opencode/](../integrations/opencode/). That plugin already does automatic memory — recall on `chat.message` and per-turn episodic capture on `session.idle`, both on by default — plus the same `memory_*` MCP tools and skills. Defaults match this plugin (`recall_limit=3`, uncapped); see the opencode recipe for its options.
@@ -138,9 +169,12 @@ opencode doesn't use the Claude Code hook protocol; it has its own plugin system
 plugin/
 ├── .claude-plugin/plugin.json   # Claude Code manifest
 ├── .codex-plugin/plugin.json    # Codex manifest
+├── .cursor-plugin/plugin.json   # Cursor manifest
 ├── .mcp.codex.json              # Codex local HTTP MCP server
+├── .mcp.cursor.json             # Cursor local HTTP MCP server (static env headers)
 ├── hooks/
 │   ├── hooks.codex.json         # Codex wiring (${PLUGIN_ROOT}, commandWindows)
+│   ├── hooks.cursor.json        # Cursor wiring (${CURSOR_PLUGIN_ROOT}, camelCase events)
 │   └── hooks.claude.json        # full Claude Code event set
 ├── scripts/
 │   ├── _shared.mjs              # resolveProject, postJSON/Search/Remember, session buffer + digest
@@ -269,6 +303,8 @@ A second, independent knob gates the pretool **server call** itself. `MEMINI_INJ
 The state self-clears whenever the context is rebuilt (`SessionStart` on startup/clear/compact, `PreCompact`, `SessionEnd`) and survives a resume, whose context is intact.
 
 **Codex.** Codex fires neither `UserPromptSubmit` nor `PreToolUse` — its tool matchers don't include `Read`/`Glob`/etc. — so the prompt window is inert there (the counter stays `0`, and the predicate degrades to the time window alone) and the pretool call gate never applies. Under Codex the dedupe surfaces are the `SessionStart` briefing and MCP tool-read tracking only.
+
+**Cursor.** Cursor fires both recall events (as `beforeSubmitPrompt` and `preToolUse`), so the full windowed dedupe applies.
 
 **PreToolUse** (one search per file; the hook fires for `Edit|MultiEdit|Write|Read|Glob|Grep` but the default allowlist recalls only on `Read|Write|Edit|MultiEdit` — see `MEMINI_INJECT_PRETOOL_TOOLS`; `MEMINI_RECALL=0` disables this hook too):
 

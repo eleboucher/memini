@@ -14,6 +14,7 @@
 
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
+import crypto from "node:crypto";
 import fs from "node:fs";
 
 // The shared client core (packages/memini-client), bundled to a committed,
@@ -1272,14 +1273,71 @@ export function promptHint(prompt) {
   return prompt.length > 240 ? prompt.slice(0, 240) + "..." : prompt;
 }
 
+// --- Host detection -------------------------------------------------------
+
+/**
+ * Which harness invoked this hook: "claude" (default), "codex" (PLUGIN_ROOT
+ * set), or "cursor" (CURSOR_VERSION env, or a payload carrying Cursor's
+ * cursor_version / hook_event_name markers). Payload markers beat the env
+ * fallback so a stray CURSOR_VERSION export can't flip another host's payload.
+ */
+export function hostKind(payload, env = process.env) {
+  if (env.PLUGIN_ROOT) return "codex";
+  if (payload && typeof payload === "object" && (payload.cursor_version != null || payload.hook_event_name != null))
+    return "cursor";
+  if (env.CURSOR_VERSION) return "cursor";
+  return "claude";
+}
+
+/**
+ * Session id across hosts: Claude/Codex send session_id; Cursor's agent hooks
+ * send conversation_id (sessionStart/sessionEnd carry an equal session_id).
+ * Undefined when absent — callers keep their own fallback ("" / "unknown").
+ */
+export function payloadSessionId(payload) {
+  const p = payload || {};
+  return p.session_id || p.sessionId || p.conversation_id || undefined;
+}
+
+/**
+ * Project cwd across hosts: Claude/Codex send cwd; Cursor hooks get
+ * CURSOR_PROJECT_DIR in the env (always present) and workspace_roots[] on the
+ * payload. Falls back to process.cwd().
+ */
+export function payloadCwd(payload, env = process.env) {
+  const p = payload || {};
+  if (typeof p.cwd === "string" && p.cwd) return p.cwd;
+  if (typeof env.CURSOR_PROJECT_DIR === "string" && env.CURSOR_PROJECT_DIR) return env.CURSOR_PROJECT_DIR;
+  if (Array.isArray(p.workspace_roots) && typeof p.workspace_roots[0] === "string" && p.workspace_roots[0])
+    return p.workspace_roots[0];
+  return process.cwd();
+}
+
+/**
+ * Cache-key identity for the per-session handshake cache. Claude/Codex spawn
+ * all of a session's hooks under one long-lived harness process, so ppid is a
+ * stable per-session key; Cursor spawns each hook under a fresh parent
+ * (observed live: every on-miss hook missed the ppid-keyed cache), so there
+ * the key derives from the payload's conversation_id. Must stay numeric for
+ * the pid-<n> filenames: 48 bits of the id's sha256, lifted by 2^47 to stay
+ * clear of real pid ranges.
+ */
+export function hookCacheKey(payload, env = process.env) {
+  if (hostKind(payload, env) !== "cursor") return process.ppid;
+  const sid = payloadSessionId(payload);
+  if (!sid) return process.ppid;
+  const hex = crypto.createHash("sha256").update(String(sid)).digest("hex");
+  return parseInt(hex.slice(0, 12), 16) + 2 ** 47;
+}
+
 /** Coerce a hook payload's various field names to a single shape. */
 export function readToolCall(payload) {
   return {
     toolName: payload?.tool_name ?? payload?.toolName ?? null,
     toolInput: payload?.tool_input ?? payload?.toolArgs ?? null,
     toolOutput: payload?.tool_response ?? payload?.tool_output ?? null,
-    sessionId: payload?.session_id || payload?.sessionId || "unknown",
-    cwd: payload?.cwd || process.cwd(),
+    sessionId: payloadSessionId(payload) || "unknown",
+    cwd: payloadCwd(payload),
   };
 }
 

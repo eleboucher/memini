@@ -27,10 +27,11 @@ that matches how [agentmemory](https://github.com/rohitg00/agentmemory)
 does it, and gives you the auto-capture + context-injection loop that
 makes memory actually useful.
 
-**Claude Code / Codex:** install via the host's plugin manager
+**Claude Code / Codex / Cursor:** install via the host's plugin manager
 (`/plugin marketplace add eleboucher/memini` then
 `/plugin install memini` for Claude Code; mount the directory as a Codex
-plugin for Codex CLI).
+plugin for Codex CLI; symlink `plugin/` into `~/.cursor/plugins/local/` or
+import the repo as a team marketplace for Cursor).
 
 **opencode:** install the native [opencode plugin](opencode/) for the
 same auto-capture + recall loop (it hooks `chat.message` and
@@ -110,6 +111,7 @@ header explicitly) instead of relying on the server-side resolve.
 | Agent       | Folder                     | Transport                               |
 | ----------- | -------------------------- | --------------------------------------- |
 | Claude Code | [`../plugin/`](../plugin/) | HTTP (plugin)                           |
+| Cursor      | [`../plugin/`](../plugin/) | HTTP (plugin)                           |
 | Codex CLI   | [`codex/`](codex/)         | stdio (plugin) or HTTP                  |
 | opencode    | [`opencode/`](opencode/)   | native plugin (or HTTP / stdio MCP)     |
 | Pi          | [`pi/`](pi/)               | native extension (or MCP via extension) |
@@ -139,7 +141,7 @@ Where a host exposes explicit memory tools, the set is the same:
 (permanently delete a wrong/outdated/poisoned memory by its id). Hermes
 and Open WebUI (Tools module) always expose them; Pi registers them natively via
 `pi.registerTool`; OpenClaw registers them by default (set `expose_tools: false`
-to opt out); Claude Code / Codex get them from the MCP server. **opencode**
+to opt out); Claude Code / Codex / Cursor get them from the MCP server. **opencode**
 is the exception: its native plugin is deliberately tool-free (automatic recall +
 capture only), so to give it `memory_forget` (or any tool) wire the memini MCP
 server alongside the plugin.

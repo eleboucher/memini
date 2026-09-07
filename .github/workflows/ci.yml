@@ -143,6 +143,10 @@ jobs:
       - name: Test Claude Code + Codex plugin scripts
         run: node --test plugin/scripts/_test.mjs
 
+      # Cursor host wiring: envelopes, payload mapping, manifests (pure node).
+      - name: Test Cursor plugin scripts
+        run: node --test plugin/scripts/_cursor_test.mjs
+
       # opencode plugin (standalone JS, no deps — ships from npm).
       - name: Test opencode plugin
         run: cd integrations/opencode/plugin && node --test

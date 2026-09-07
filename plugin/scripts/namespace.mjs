@@ -29,13 +29,21 @@ import {
   readOverrides,
   defaultOverridesPath,
 } from "./_client.gen.mjs";
+import { hostKind } from "./_shared.mjs";
 import fs from "node:fs";
 import path from "node:path";
 
 const args = process.argv.slice(2).filter((a) => a !== "--");
 const cwd = process.cwd();
 const boot = readBootstrap(process.env);
-const CODEX_HOST = Boolean(process.env.PLUGIN_ROOT);
+const HOST = hostKind();
+// Claude Code re-runs the headersHelper on reconnect; Codex and Cursor read
+// static env-based MCP config, so a pin steers their hooks' REST calls only.
+const MCP_APPLY_NOTE = {
+  codex: `MCP:    start a new thread (or restart Codex) to apply the new namespace.`,
+  cursor: `MCP:    restart Cursor to apply. Its MCP headers are static env vars; a pin steers the hooks, not the MCP tools.`,
+  claude: `MCP:    run /reload-plugins to apply (the headersHelper only runs on connect).`,
+}[HOST];
 
 // Send a JSON request to the pins endpoint. Returns { ok, status, body } or
 // throws (network/guard) so callers can render the offline message.
@@ -169,9 +177,7 @@ async function set(raw) {
     `project key:      ${entry.key || Object.values(facts)[0]}`,
     ``,
     `hooks:  active on the next invocation (session digests, turn capture, recall).`,
-    CODEX_HOST
-      ? `MCP:    start a new thread (or restart Codex) to apply the new namespace.`
-      : `MCP:    run /reload-plugins to apply (the headersHelper only runs on connect).`,
+    MCP_APPLY_NOTE,
     ``,
     `The pin lives on the memini server, so it follows you across machines and`,
     `every client resolves the same namespace. It beats MEMINI_NAMESPACE.`,
@@ -212,7 +218,7 @@ async function clear() {
     `namespace pin cleared — this project resolves automatically again.`,
     ``,
     `hooks:  active on the next invocation.`,
-    CODEX_HOST ? `MCP:    start a new thread (or restart Codex) to apply.` : `MCP:    run /reload-plugins to apply.`,
+    MCP_APPLY_NOTE,
   ].join("\n");
 }
 

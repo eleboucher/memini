@@ -167,8 +167,11 @@ async function withEnv(overrides, fn) {
 function runHook(script, payload, env = {}) {
   // A developer shell may export transport vars pointing at a real memini; strip
   // them so each test's explicit env points the hook at the in-process mock.
+  // CURSOR_* gets stripped too: a shell inside the Cursor IDE can carry them,
+  // and they would flip the hooks' host detection to "cursor" mid-test.
   const base = { ...process.env };
   for (const k of ["MEMINI_BASE_URL", "MEMINI_URL", "MEMINI_API_KEY", "MEMINI_TOKEN", "MEMINI_NAMESPACE", "MEMINI_HOME"]) delete base[k];
+  for (const k of Object.keys(base)) if (k.startsWith("CURSOR_")) delete base[k];
   return new Promise((resolveProm, reject) => {
     const child = spawn("node", [resolve(SCRIPTS, script)], {
       env: { ...base, ...env, MEMINI_DEBUG: "1" },
@@ -194,6 +197,7 @@ function runHook(script, payload, env = {}) {
 function runCommand(script, argv, env = {}, cwd = process.cwd()) {
   const base = { ...process.env };
   for (const k of ["MEMINI_BASE_URL", "MEMINI_URL", "MEMINI_API_KEY", "MEMINI_TOKEN", "MEMINI_NAMESPACE", "MEMINI_HOME"]) delete base[k];
+  for (const k of Object.keys(base)) if (k.startsWith("CURSOR_")) delete base[k];
   return new Promise((resolveProm, reject) => {
     const child = spawn("node", [resolve(SCRIPTS, script), ...argv], {
       cwd,

@@ -1,0 +1,11 @@
+{
+  "session_id": "cursor-tools",
+  "conversation_id": "cursor-tools",
+  "hook_event_name": "sessionEnd",
+  "cursor_version": "1.7.2",
+  "workspace_roots": ["."],
+  "reason": "user_close",
+  "duration_ms": 45000,
+  "is_background_agent": false,
+  "final_status": "completed"
+}

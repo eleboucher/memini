@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "\"${CURSOR_PLUGIN_ROOT}/scripts/run.sh\" \"${CURSOR_PLUGIN_ROOT}/scripts/session-start.mjs\""
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "\"${CURSOR_PLUGIN_ROOT}/scripts/run.sh\" \"${CURSOR_PLUGIN_ROOT}/scripts/user-prompt-submit.mjs\""
+      }
+    ],
+    "preToolUse": [
+      {
+        "matcher": "Edit|Write|Read|Grep|Glob|StrReplace",
+        "command": "\"${CURSOR_PLUGIN_ROOT}/scripts/run.sh\" \"${CURSOR_PLUGIN_ROOT}/scripts/pre-tool-use.mjs\""
+      }
+    ],
+    "postToolUse": [
+      {
+        "matcher": "Edit|Write|Shell|Delete|StrReplace|Task|MCP:memory_(recall|briefing|get)",
+        "command": "\"${CURSOR_PLUGIN_ROOT}/scripts/run.sh\" \"${CURSOR_PLUGIN_ROOT}/scripts/post-tool-use.mjs\""
+      }
+    ],
+    "stop": [
+      {
+        "command": "\"${CURSOR_PLUGIN_ROOT}/scripts/run.sh\" \"${CURSOR_PLUGIN_ROOT}/scripts/stop.mjs\""
+      }
+    ],
+    "preCompact": [
+      {
+        "command": "\"${CURSOR_PLUGIN_ROOT}/scripts/run.sh\" \"${CURSOR_PLUGIN_ROOT}/scripts/pre-compact.mjs\""
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": "\"${CURSOR_PLUGIN_ROOT}/scripts/run.sh\" \"${CURSOR_PLUGIN_ROOT}/scripts/session-end.mjs\""
+      }
+    ]
+  }
+}

@@ -20,6 +20,10 @@ import {
   readStdin,
   parseJSON,
   getSessionContext,
+  hostKind,
+  hookCacheKey,
+  payloadSessionId,
+  payloadCwd,
   postSearch,
   fitByTokens,
   escapeMeminiTags,
@@ -57,9 +61,10 @@ const COMMAND_PREFIXES = ["/", "!", "#"];
 
 async function main() {
   const payload = parseJSON(await readStdin()) || {};
+  const host = hostKind(payload);
   const prompt = typeof payload.prompt === "string" ? payload.prompt : "";
-  const sessionId = typeof payload.session_id === "string" ? payload.session_id : "";
-  const cwd = typeof payload.cwd === "string" && payload.cwd ? payload.cwd : process.cwd();
+  const sessionId = payloadSessionId(payload) || "";
+  const cwd = payloadCwd(payload);
 
   // Hot path: resolve the namespace + settings from the per-session handshake
   // cache ONLY — this hook fires on every prompt, so a live handshake here
@@ -68,7 +73,7 @@ async function main() {
   // counter below must advance on EVERY prompt, and it lives behind the
   // settings ctx resolves. The "never" posture keeps this free — still zero
   // network on a short/command prompt, exactly as before.
-  const ctx = await getSessionContext({ cwd, ppid: process.ppid, allowNetwork: "never" });
+  const ctx = await getSessionContext({ cwd, ppid: hookCacheKey(payload), allowNetwork: "never" });
   const project = ctx.namespace;
 
   if (DEBUG) console.error(`[memini] UserPromptSubmit project=${project} source=${ctx.source} session=${sessionId}`);
@@ -234,11 +239,17 @@ async function main() {
   }
 
   const context = out.join("\n");
-  process.stdout.write(
-    JSON.stringify({
-      hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: context },
-    }),
-  );
+  if (host === "cursor") {
+    // beforeSubmitPrompt has no documented context-injection output; emit
+    // sessionStart's additional_context shape best-effort (ignored if unknown).
+    process.stdout.write(JSON.stringify({ additional_context: context }));
+  } else {
+    process.stdout.write(
+      JSON.stringify({
+        hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: context },
+      }),
+    );
+  }
   if (DEBUG) console.error(`[memini] UserPromptSubmit injected ${fit.items.length} hit(s) for session=${sessionId}`);
 
   // Beacon LAST, after the stdout payload is fully written, so telemetry can

@@ -1,0 +1,10 @@
+{
+  "conversation_id": "cursor-tools",
+  "hook_event_name": "preToolUse",
+  "cursor_version": "1.7.2",
+  "workspace_roots": ["."],
+  "tool_name": "Write",
+  "tool_use_id": "tool-write",
+  "tool_input": { "file_path": "internal/auth.go", "contents": "package auth" },
+  "cwd": "."
+}

@@ -1,0 +1,9 @@
+{
+  "conversation_id": "cursor-tools",
+  "hook_event_name": "stop",
+  "cursor_version": "1.7.2",
+  "workspace_roots": ["."],
+  "status": "completed",
+  "loop_count": 0,
+  "transcript_path": "/must/not/be/read/cursor.jsonl"
+}

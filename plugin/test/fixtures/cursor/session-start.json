@@ -1,0 +1,9 @@
+{
+  "session_id": "cursor-start",
+  "conversation_id": "cursor-start",
+  "hook_event_name": "sessionStart",
+  "cursor_version": "1.7.2",
+  "workspace_roots": ["."],
+  "is_background_agent": false,
+  "composer_mode": "agent"
+}
