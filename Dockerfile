@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG GO_VERSION=1.26.5
+ARG GO_VERSION=1.27.1
 ARG NODE_VERSION=24
 
 FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-alpine AS ui

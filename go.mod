@@ -1,28 +1,25 @@
 module github.com/eleboucher/memini
 
-go 1.26.5
-
-require (
-	github.com/asg017/sqlite-vec-go-bindings v0.1.6
-	github.com/go-chi/chi/v5 v5.3.2
-	// Pinned: newest ncruces with both sqlite3.Binary and wasm atomics, required
-	// by the sqlite-vec-go-bindings embedded wasm. See .renovaterc.json5.
-	github.com/ncruces/go-sqlite3 v0.21.2
-	github.com/prometheus/client_golang v1.24.1
-)
+go 1.27.1
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.71.0
+	github.com/asg017/sqlite-vec-go-bindings v0.1.6
 	github.com/caarlos0/env/v11 v11.4.1
+	github.com/go-chi/chi/v5 v5.3.2
 	github.com/google/jsonschema-go v0.4.3
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
+	// Pinned: newest ncruces with both sqlite3.Binary and wasm atomics, required
+	// by the sqlite-vec-go-bindings embedded wasm. See .renovaterc.json5.
+	github.com/ncruces/go-sqlite3 v0.21.2
 	github.com/oapi-codegen/runtime v1.7.0
 	github.com/openai/openai-go/v3 v3.56.0
 	github.com/pgvector/pgvector-go v0.4.1
 	github.com/pgvector/pgvector-go/pgx v0.4.1
+	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.3
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
