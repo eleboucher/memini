@@ -2,11 +2,18 @@
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
   extends: ["config:recommended", ":semanticCommits", ":automergeMinor", "schedule:weekly"],
   labels: ["dependencies"],
+  // The weekly schedule already rate-limits us; Renovate's default
+  // prHourlyLimit of 2 on top of it starved the queue, so low-priority
+  // groups (go modules) never reached the front. Let a run drain it.
+  prHourlyLimit: 0,
+  prConcurrentLimit: 20,
   packageRules: [
     {
       description: "Group Go module updates",
       matchManagers: ["gomod"],
       groupName: "go modules",
+      // Ahead of the npm/mise lockfile churn, which otherwise sorts first.
+      prPriority: 5,
     },
     {
       description: "Keep the Go toolchain pinned in mise and go.mod in sync",
