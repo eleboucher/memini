@@ -96,9 +96,11 @@ own forward pass, so the model's context bounds a pair, never the batch. Leave i
 at 6000 with a 50-deep pool and the pool shards into many _serial_ requests, which
 is a far better way to blow
 [`MEMINI_RERANK_TIMEOUT`](../reference/configuration.md#memini_rerank_timeout)
-(default `10s`) than a large body ever was. On timeout, recall silently falls back
-to composite order, so a mis-sized batch cap presents as "the reranker does
-nothing".
+(default `10s`) than a large body ever was. On timeout, an ungated reranker
+falls back to composite order, so a mis-sized batch cap presents as "the
+reranker does nothing". With `MEMINI_RERANK_MIN_SCORE` configured, timeout
+returns empty instead: the relevance gate fails closed rather than injecting
+an ungated result.
 
 **Keep the client's timeout above the server's.** That composite-order fallback
 only reaches the caller if the caller is still listening. Clients bound each
@@ -149,9 +151,10 @@ dropped, across the whole `MEMINI_RERANK_POOL` before the recall limit applies.
 When everything gates out, recall returns **empty** — "nothing relevant exists"
 — instead of falling back to the ungated composite order. Empty-by-gate is
 recorded as `rerank_result{result="empty"}` in the metrics, distinct from
-`ok`/`fallback`, so you can watch the gate's collapse rate; a rerank _failure_
-(timeout, dead backend) still falls back to composite order, because a dead
-reranker never rendered a verdict.
+`ok`/`fallback`, so you can watch the gate's collapse rate. A rerank failure
+(timeout, dead backend) also returns empty when this gate is configured:
+availability cannot silently disable an operator's relevance requirement.
+Without the gate, failures continue to fall back to composite order.
 
 Two constraints. It is cross-encoder-only — `MEMINI_RERANK=llm` returns an
 ordinal list with no scores, so combining it with the gate is a boot error

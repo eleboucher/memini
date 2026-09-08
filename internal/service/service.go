@@ -274,12 +274,13 @@ type Service struct {
 	// reranker, when set, reorders the top k composite-ranked recall candidates
 	// (with an LLM or a cross-encoder model) before truncating to the limit.
 	// rerankName labels the backend for metrics. Adds one reranker call per
-	// Recall, so it is opt-in (see WithReranker); failures fall back to the
-	// composite order.
+	// Recall, so it is opt-in (see WithReranker). Failures fall back to the
+	// composite order unless a configured relevance gate requires fail-closed
+	// behavior (see WithRerankEmptyVerdict).
 	reranker   rerank.Reranker
 	rerankName string
 	// rerankTimeout bounds the reranker call; past it, recall falls back to
-	// composite order instead of stalling on a slow backend.
+	// composite order unless a configured relevance gate requires an empty result.
 	rerankTimeout time.Duration
 	// rerankEmptyVerdict makes an empty rerank result final (the score-gate's
 	// "nothing relevant" verdict) instead of falling back to composite order.
@@ -530,12 +531,12 @@ func WithAnswerer(c llm.Completer) Option { return func(s *Service) { s.answerer
 func (s *Service) HasAnswerer() bool { return s.answerer != nil }
 
 // defaultRerankTimeout bounds a single reranker call; past it, recall falls
-// back to composite order.
+// back to composite order unless a configured relevance gate fails closed.
 const defaultRerankTimeout = 10 * time.Second
 
 // rerankResponseMargin is held back from a caller's deadline when bounding the
-// rerank, so the result (composite order on fallback) still has time to reach
-// the caller before its own deadline fires.
+// rerank, so an ungated fallback still has time to reach the caller before its
+// own deadline fires.
 const rerankResponseMargin = 250 * time.Millisecond
 
 // WithReranker enables reranking of recall candidates: after composite ranking,
@@ -606,8 +607,8 @@ func WithImportancePoolMin(f float64) Option {
 // the queries it exists for. Without a gate, empty output is a backend
 // pathology (an LLM answering "none", a /rerank server omitting everything)
 // and the fallback stays the right call — so this is opt-in, wired only when
-// a gate is configured. Rerank FAILURES (error, timeout) keep the composite
-// fallback either way: a dead reranker never rendered a verdict to honor.
+// a gate is configured. Rerank failures (error, timeout) also return empty:
+// availability cannot silently disable an operator's relevance requirement.
 func WithRerankEmptyVerdict() Option {
 	return func(s *Service) {
 		s.rerankEmptyVerdict = true
@@ -615,7 +616,8 @@ func WithRerankEmptyVerdict() Option {
 }
 
 // WithRerankTimeout bounds a single reranker call; at the deadline recall
-// degrades to composite order. d <= 0 keeps the default.
+// degrades to composite order unless a configured relevance gate fails closed.
+// d <= 0 keeps the default.
 func WithRerankTimeout(d time.Duration) Option {
 	return func(s *Service) {
 		if d > 0 {
@@ -3200,9 +3202,10 @@ func (s *Service) expandLinked(ctx context.Context, results []store.Scored, k in
 // no reranker it simply caps at k; with one it reranks the top rerankPool
 // candidates (at least k) by the reranker's verdict and returns up to k, after
 // reserveImportantPool has swapped any high-importance stragglers into that pool.
-// A rerank failure falls back to the composite order so recall never errors on
-// the reranker's account — and because the reserve only ever touches candidates
-// at or past position k, that fallback is byte-identical either way.
+// A rerank failure falls back to the composite order unless a configured
+// relevance gate requires an empty result. The reserve only ever touches
+// candidates at or past position k, so the ungated fallback is byte-identical
+// either way.
 func (s *Service) finalizeRecall(ctx context.Context, query string, ranked []store.Scored, k int) []store.Scored {
 	if s.reranker == nil {
 		return search.Dedup(ranked, k)
@@ -3243,12 +3246,17 @@ func (s *Service) finalizeRecall(ctx context.Context, query string, ranked []sto
 	}
 	// Bound the rerank by the configured timeout and, when the caller imposed a
 	// deadline, by the time left before it minus a response margin — whichever is
-	// tighter. If no time remains, skip the rerank and keep composite order so the
-	// caller gets a result before its deadline rather than after.
+	// tighter. If no time remains, skip the rerank and use the configured
+	// fallback so the caller gets a result before its deadline rather than after.
 	budget := s.rerankTimeout
 	if dl, ok := ctx.Deadline(); ok {
 		rem := time.Until(dl) - rerankResponseMargin
 		if rem <= 0 {
+			if s.rerankEmptyVerdict {
+				slog.WarnContext(ctx, "recall: no time left to rerank, returning empty because relevance gate is configured", "backend", s.rerankName)
+				s.metrics.RerankResult(s.rerankName, "fallback")
+				return nil
+			}
 			slog.WarnContext(ctx, "recall: no time left to rerank, using composite order", "backend", s.rerankName)
 			s.metrics.RerankResult(s.rerankName, "fallback")
 			return search.Dedup(ranked, k)
@@ -3267,6 +3275,11 @@ func (s *Service) finalizeRecall(ctx context.Context, query string, ranked []sto
 	order, err := s.reranker.Rerank(rctx, query, cands)
 	s.metrics.OpDuration("rerank", time.Since(start))
 	if err != nil {
+		if s.rerankEmptyVerdict {
+			slog.WarnContext(ctx, "recall: rerank failed, returning empty because relevance gate is configured", "backend", s.rerankName, "err", err)
+			s.metrics.RerankResult(s.rerankName, "fallback")
+			return nil
+		}
 		slog.WarnContext(ctx, "recall: rerank failed, using composite order", "backend", s.rerankName, "err", err)
 		s.metrics.RerankResult(s.rerankName, "fallback")
 		return search.Dedup(ranked, k)

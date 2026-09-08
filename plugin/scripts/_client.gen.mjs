@@ -42,6 +42,11 @@ function validateNamespace(ns) {
 
 // src/capture.ts
 var TRUNCATION_MARKER = "\n[...truncated]";
+function stripInjectedContext(text) {
+  const envelope = /<(memini-(?:recall|context|pretool|memory-directive|compact-recovery))\b[^>]*>[\s\S]*?<\/\1>/gi;
+  const stripped = text.replace(envelope, "");
+  return stripped === text ? text : stripped.trim();
+}
 function truncateForCapture(s, max) {
   if (typeof max !== "number" || !Number.isFinite(max) || max <= 0) return s;
   const cap = Math.floor(max);
@@ -54,9 +59,9 @@ function truncateForCapture(s, max) {
   return s.slice(0, i) + TRUNCATION_MARKER;
 }
 function buildTurnCapture(userText, assistantText, userMax, assistantMax) {
-  return `${truncateForCapture(userText, userMax)}
+  return `${truncateForCapture(stripInjectedContext(userText), userMax)}
 
-${truncateForCapture(assistantText, assistantMax)}`;
+${truncateForCapture(stripInjectedContext(assistantText), assistantMax)}`;
 }
 
 // src/override.ts
@@ -903,6 +908,7 @@ export {
   resolveHarnessCwd,
   resolveNamespace,
   sessionCwdPath,
+  stripInjectedContext,
   syncStoredApiKey,
   truncate,
   truncateForCapture,

@@ -42,6 +42,23 @@ the tools on demand.
 Code/Codex hooks layer is host-specific, so the agent has to be told to
 use the tools via a `CLAUDE.md`-style file.
 
+## Keeping recalled context separate from conversation
+
+The bundled integrations mark automatic recall as read-only historical data,
+with instructions to use it only for the current request and silently ignore
+unrelated memories. Recall blocks use `memini-recall` wrappers, with stored
+wrapper tags escaped so a memory cannot close its enclosing block. Turn-capture
+hygiene removes those blocks instead of saving them again as user statements.
+The MCP connection policy gives clients the same relevance guidance.
+
+These boundaries prevent marked context from being recaptured; they do not
+prove that every retrieved memory is relevant. For server-side relevance
+filtering across REST and MCP clients, configure and calibrate the
+[rerank score gate](../docs/guides/tuning-recall.md#gating-on-rerank-score).
+When that gate is configured, an unavailable reranker returns no memories
+instead of bypassing the gate. Existing contaminated memories are not deleted
+by upgrading; inspect and correct or forget them separately.
+
 ## Shared namespace across agents
 
 Every request is scoped to a **namespace**. Point multiple

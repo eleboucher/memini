@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/eleboucher/memini/internal/memory"
 	"github.com/eleboucher/memini/internal/rerank"
@@ -207,6 +208,20 @@ func finalizeSvc(rr rerank.Reranker, reserve int) *Service {
 		reservePromoteRatio:   defaultReservePromoteRatio,
 		reserveTopAnchor:      defaultReserveTopAnchor,
 		metrics:               nopMetrics{},
+	}
+}
+
+func TestFinalizeRecallGatedRerankerNoDeadlineMarginReturnsEmpty(t *testing.T) {
+	// The margin check is inside finalizeRecall, after retrieval has completed.
+	// A deadline shorter than the fixed response margin reaches that branch
+	// deterministically without racing a real Recall's embed/search work.
+	svc := finalizeSvc(&stubReranker{}, 0)
+	svc.rerankEmptyVerdict = true
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+
+	if got := svc.finalizeRecall(ctx, "q", finalizePool(), 3); len(got) != 0 {
+		t.Fatalf("a gated reranker without deadline margin must fail closed: got %q", ids(got))
 	}
 }
 

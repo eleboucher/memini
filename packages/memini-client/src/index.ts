@@ -37,6 +37,7 @@ export {
   TRUNCATION_MARKER,
   truncateForCapture,
   buildTurnCapture,
+  stripInjectedContext,
 } from "./capture.js";
 
 export {

@@ -8,6 +8,7 @@ import {
   TRUNCATION_MARKER,
   truncateForCapture,
   buildTurnCapture,
+  stripInjectedContext,
 } from "../src/capture.js";
 
 // The truncation contract lives in test/fixtures/capture-vectors.json and is
@@ -86,4 +87,18 @@ test("buildTurnCapture: applies each side's own bound and joins with a blank lin
 test("buildTurnCapture: 0 on one side leaves that side whole", () => {
   assert.equal(buildTurnCapture("uuuuu", "aaaaa", 0, 3), `uuuuu\n\naaa${TRUNCATION_MARKER}`);
   assert.equal(buildTurnCapture("uuuuu", "aaaaa", 2, 0), `uu${TRUNCATION_MARKER}\n\naaaaa`);
+});
+
+test("stripInjectedContext removes complete generated envelopes and preserves surrounding text", () => {
+  const recalled = "<memini-recall read-only>\n- (semantic) old fact\n</memini-recall>";
+  assert.equal(stripInjectedContext(`${recalled}\nCurrent question`), "Current question");
+  assert.equal(stripInjectedContext(`Current answer\n${recalled}`), "Current answer");
+  assert.equal(stripInjectedContext(`<memini-context project="demo" read-only>\nold\n</memini-context>\nCurrent question`), "Current question");
+  assert.equal(stripInjectedContext("  code\n  <memini-recall> literal\n"), "  code\n  <memini-recall> literal\n");
+  assert.equal(stripInjectedContext("Please explain <memini-recall> literally"), "Please explain <memini-recall> literally");
+});
+
+test("buildTurnCapture strips generated context before applying bounds", () => {
+  const recalled = "<memini-context read-only>\nold memory\n</memini-context>";
+  assert.equal(buildTurnCapture(`${recalled}\ncurrent user`, "current assistant", 7, 0), "current" + TRUNCATION_MARKER + "\n\ncurrent assistant");
 });

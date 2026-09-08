@@ -210,7 +210,8 @@ test("context hook injects a recalled memory into event.system", async () => {
 
     assert.equal(event.system.length, 1);
     assert.equal(event.system[0].type, "text");
-    assert.match(event.system[0].text, /Relevant long-term memory from memini/);
+    assert.match(event.system[0].text, /^<memini-recall read-only>\n<!-- Retrieved memories/);
+    assert.match(event.system[0].text, /Historical reference data/);
     assert.match(event.system[0].text, /the deploy key lives in vault/);
     assert.equal(posts.length, 0, "recall must not write");
   } finally {

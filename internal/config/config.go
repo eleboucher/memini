@@ -366,14 +366,17 @@ type Config struct {
 	// (unlike the fused retrieval score, whose min-max normalization inflates
 	// the best of a bad pool), so an absolute floor here is what cuts the
 	// noise tail on queries with no real answer: when everything gates out,
-	// recall returns EMPTY rather than the least-irrelevant leftovers. The
-	// response `score` field still carries the fused score — rerank scores are
-	// never exposed on the wire. Cross-encoder only: the LLM reranker returns
-	// an ordinal list with no scores, so combining it with this knob is a boot
-	// error rather than a gate that silently never fires. 0 (the default)
-	// disables the gate; no upper bound is enforced because some /rerank
-	// servers emit unbounded logits. Pick a threshold with the rerank-gate
-	// bench sweep (bench.RerankGateSweep) against your own reranker.
+	// recall returns EMPTY rather than the least-irrelevant leftovers. If the
+	// gated reranker is unavailable or times out, recall also returns EMPTY
+	// rather than silently injecting the ungated composite order. The response
+	// `score` field still carries the fused score — rerank scores are never
+	// exposed on the wire. Cross-encoder only: the LLM reranker returns an
+	// ordinal list with no scores, so combining it with this knob is a boot
+	// error rather than a gate that silently never fires. It requires an enabled
+	// cross-encoder reranker. 0 (the default) disables the gate; no upper bound
+	// is enforced because some /rerank servers emit unbounded logits. Pick a
+	// threshold with the rerank-gate bench sweep (bench.RerankGateSweep) against
+	// your own reranker.
 	RerankMinScore float64 `env:"MEMINI_RERANK_MIN_SCORE" envDefault:"0"`
 	// RerankMaxBatchChars caps the total characters across the query and all
 	// documents in a single /rerank request. This is an HTTP payload guard, not
@@ -400,8 +403,10 @@ type Config struct {
 	// server's context. 0 disables truncation. Only used when MEMINI_RERANK is
 	// the LLM reranker; the cross-encoder uses RerankMaxDocChars.
 	RerankLLMMaxDocChars int `env:"MEMINI_RERANK_LLM_MAX_DOC_CHARS" envDefault:"300"`
-	// RerankTimeout bounds a single reranker call; past it, recall degrades to
-	// composite order instead of stalling on a slow or congested backend.
+	// RerankTimeout bounds a single reranker call. Past it, an ungated reranker
+	// degrades to composite order instead of stalling on a slow or congested
+	// backend; a reranker with RerankMinScore returns empty so the relevance
+	// gate stays enforced.
 	RerankTimeout time.Duration `env:"MEMINI_RERANK_TIMEOUT" envDefault:"10s"`
 	// RerankMaxConcurrency caps in-flight rerank calls. 0 is unbounded. See
 	// EmbedMaxConcurrency for the rationale.
@@ -1050,10 +1055,9 @@ func (c *Config) validateChunking() error {
 
 // validateRecallScores checks the recall-path score floors and ranking weights.
 // The fused floor and the salience blend weight are [0,1] range checks; the
-// rerank gate additionally rejects a configuration the runtime could never
-// honor — the LLM backend returns an ordinal list with no scores, so accepting
-// the combination would configure a gate that silently never fires, which reads
-// as "the gate is broken" with nothing to debug.
+// rerank gate additionally requires an enabled cross-encoder. Other settings
+// would either leave the gate unwired or pair it with the LLM backend's ordinal
+// output, so accepting them would silently never fire the gate.
 func (c *Config) validateRecallScores() error {
 	if c.RecallMinScore < 0 || c.RecallMinScore > 1 {
 		return fmt.Errorf("MEMINI_RECALL_MIN_SCORE must be in [0,1], got %v", c.RecallMinScore)
@@ -1062,13 +1066,12 @@ func (c *Config) validateRecallScores() error {
 		c.RecallMinSemanticScore < 0 || c.RecallMinSemanticScore > 1 {
 		return fmt.Errorf("MEMINI_RECALL_MIN_SEMANTIC_SCORE must be finite and in [0,1], got %v", c.RecallMinSemanticScore)
 	}
-	if c.RerankMinScore < 0 {
-		return fmt.Errorf("MEMINI_RERANK_MIN_SCORE must be >= 0, got %v", c.RerankMinScore)
+	if math.IsNaN(c.RerankMinScore) || math.IsInf(c.RerankMinScore, 0) || c.RerankMinScore < 0 {
+		return fmt.Errorf("MEMINI_RERANK_MIN_SCORE must be finite and >= 0, got %v", c.RerankMinScore)
 	}
-	if c.RerankMinScore > 0 && c.RerankIsLLM() {
-		return fmt.Errorf("MEMINI_RERANK_MIN_SCORE requires a cross-encoder reranker: " +
-			"the LLM reranker returns an ordinal list with no scores, so the gate would " +
-			"silently never fire (unset it, or point MEMINI_RERANK at a /rerank endpoint)")
+	if c.RerankMinScore > 0 && (!c.RerankEnabled() || c.RerankIsLLM()) {
+		return fmt.Errorf("MEMINI_RERANK_MIN_SCORE requires an enabled cross-encoder reranker: " +
+			"set MEMINI_RERANK to a /rerank endpoint, or unset the score gate")
 	}
 	if math.IsNaN(c.AssessedSalienceWeight) || math.IsInf(c.AssessedSalienceWeight, 0) ||
 		c.AssessedSalienceWeight < 0 || c.AssessedSalienceWeight > 1 {

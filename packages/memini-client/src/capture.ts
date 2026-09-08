@@ -11,6 +11,14 @@
 /** The marker appended to a cut, matching the Go importer's truncateRunes. */
 export const TRUNCATION_MARKER = "\n[...truncated]";
 
+// Remove only complete envelopes emitted by memini integrations. The exact
+// known tag names keep ordinary text mentioning a bare memini tag untouched.
+export function stripInjectedContext(text: string): string {
+  const envelope = /<(memini-(?:recall|context|pretool|memory-directive|compact-recovery))\b[^>]*>[\s\S]*?<\/\1>/gi;
+  const stripped = text.replace(envelope, "");
+  return stripped === text ? text : stripped.trim();
+}
+
 /**
  * Truncates `s` to `max` characters, appending TRUNCATION_MARKER when it cuts.
  * Returns `s` unchanged when `max <= 0` (uncapped) or when it already fits.
@@ -70,5 +78,5 @@ export function buildTurnCapture(
   userMax: number,
   assistantMax: number,
 ): string {
-  return `${truncateForCapture(userText, userMax)}\n\n${truncateForCapture(assistantText, assistantMax)}`;
+  return `${truncateForCapture(stripInjectedContext(userText), userMax)}\n\n${truncateForCapture(stripInjectedContext(assistantText), assistantMax)}`;
 }

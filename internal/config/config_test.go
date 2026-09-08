@@ -388,6 +388,20 @@ func TestLoadValidationErrors(t *testing.T) {
 			env:  map[string]string{"MEMINI_RERANK_MIN_SCORE": "-0.1"},
 		},
 		{
+			// A positive gate without a reranker is never wired by startup, so
+			// accepting it would advertise a relevance requirement that cannot run.
+			name: "rerank min score with reranking off",
+			env:  map[string]string{"MEMINI_RERANK_MIN_SCORE": "0.3"},
+		},
+		{
+			name: "rerank min score NaN",
+			env:  map[string]string{"MEMINI_RERANK": "http://reranker:8002/v1", "MEMINI_RERANK_MIN_SCORE": "NaN"},
+		},
+		{
+			name: "rerank min score infinity",
+			env:  map[string]string{"MEMINI_RERANK": "http://reranker:8002/v1", "MEMINI_RERANK_MIN_SCORE": "+Inf"},
+		},
+		{
 			// The LLM reranker emits an ordinal list, not calibrated scores —
 			// a gate configured against it would silently never fire, which is
 			// worse than refusing to boot.

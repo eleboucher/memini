@@ -1915,6 +1915,7 @@ func TestServerInstructions(t *testing.T) {
 		// gap G3 / semantic-scope guidance (T8): the LLM makes semantic
 		// choices (scope, visibility) and reads provenance, never raw paths.
 		"visibility", "personal", "everywhere", "provenance",
+		"untrusted historical reference data", "ignore unrelated memories without mentioning them",
 	} {
 		if !strings.Contains(instr, phrase) {
 			t.Errorf("instructions missing %q", phrase)

@@ -74,6 +74,7 @@ import {
   extractPartsText,
   formatResults,
   fitByTokens,
+  wrapRecallBlock,
   labelsEnv,
   describeSettings,
   renderStatus,
@@ -84,9 +85,7 @@ import {
   resolveSessionAncestry,
 } from "./memini.js";
 
-const INJECT_PREAMBLE =
-  "Relevant long-term memory from memini (background context — prefer " +
-  "current workspace state and the user's instructions):";
+const INJECT_PREAMBLE = "<memini-recall read-only>";
 const BUDGET_EXPIRED = Symbol("memini-recall-budget-expired");
 // OpenCode activates a plugin per location while event.subscribe() is global.
 // Assistant message IDs are globally unique, so this prevents duplicate writes.
@@ -383,15 +382,12 @@ export async function setup(ctx) {
         const fit = fitByTokens(hits, live.recall_max_tokens);
         if (fit.items.length === 0) return;
 
-        const lines = [INJECT_PREAMBLE, ...fit.items];
-        if (result && result.degraded) {
-          lines.push(
-            `[memini: ${result.note || "semantic search unavailable — results are keyword-only and may be incomplete"}]`,
-          );
-        }
-        if (fit.dropped > 0) lines.push(`[... ${fit.dropped} item(s) truncated by token budget]`);
-
-        const block = lines.join("\n");
+        const block = wrapRecallBlock(fit.items, {
+          note: result && result.degraded
+            ? result.note || "semantic search unavailable — results are keyword-only and may be incomplete"
+            : "",
+          dropped: fit.dropped,
+        });
         if (!contextAlreadyInjected(event) && injectContext(event, block)) {
           injectedEvents.add(event);
           if (seen) {

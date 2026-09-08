@@ -274,10 +274,10 @@ func TestRecallRerankEmptyVerdictReturnsEmpty(t *testing.T) {
 	}
 }
 
-func TestRecallRerankEmptyVerdictErrorStillFallsBack(t *testing.T) {
-	// The empty-verdict flag changes ONLY the empty-result branch: a rerank
-	// FAILURE (error/timeout) still falls back to composite order, because a
-	// dead reranker never rendered any verdict to honor.
+func TestRecallRerankEmptyVerdictErrorReturnsEmpty(t *testing.T) {
+	// A configured score gate is a relevance requirement. If its backend is
+	// unavailable, returning the ungated composite order would inject exactly
+	// the candidates the operator configured the gate to reject.
 	st := openTestStore(t)
 	base := service.New(st, embedtest.New(dims), service.WithSyncReinforce())
 	ingestTwo(t, base)
@@ -290,7 +290,28 @@ func TestRecallRerankEmptyVerdictErrorStillFallsBack(t *testing.T) {
 	if !rr.called {
 		t.Fatal("reranker not invoked")
 	}
-	if len(got) != len(baseIDs) || got[0] != baseIDs[0] {
-		t.Fatalf("a rerank error must keep composite order even with the flag: base=%v got=%v", baseIDs, got)
+	if len(baseIDs) == 0 {
+		t.Fatal("test setup needs an otherwise-recallable composite result")
+	}
+	if len(got) != 0 {
+		t.Fatalf("a gated rerank error must fail closed: got=%v", got)
+	}
+}
+
+func TestRecallRerankEmptyVerdictTimeoutReturnsEmpty(t *testing.T) {
+	st := openTestStore(t)
+	seed := service.New(st, embedtest.New(dims), service.WithSyncReinforce())
+	ingestTwo(t, seed)
+
+	rr := &slowReranker{}
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(),
+		service.WithReranker(rr, "test"), service.WithRerankEmptyVerdict(),
+		service.WithRerankTimeout(10*time.Millisecond))
+	got := recallIDs(t, svc)
+	if !errors.Is(rr.err, context.DeadlineExceeded) {
+		t.Fatalf("reranker should be canceled by the timeout, got %v", rr.err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("a gated rerank timeout must fail closed: got=%v", got)
 	}
 }

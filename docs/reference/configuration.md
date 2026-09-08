@@ -389,13 +389,13 @@ int, default `0`. Set by `Config.RerankPool`.
 
 float64, default `0`. Set by `Config.RerankMinScore`.
 
-`MEMINI_RERANK_MIN_SCORE` drops rerank candidates whose cross-encoder relevance score falls below it, across the whole `MEMINI_RERANK_POOL` before the recall limit is applied. Cross-encoders emit calibrated absolute relevance (unlike the fused retrieval score, whose min-max normalization inflates the best of a bad pool), so an absolute floor here is what cuts the noise tail on queries with no real answer: when everything gates out, recall returns EMPTY rather than the least-irrelevant leftovers. The response `score` field still carries the fused score — rerank scores are never exposed on the wire. Cross-encoder only: the LLM reranker returns an ordinal list with no scores, so combining it with this knob is a boot error rather than a gate that silently never fires. 0 (the default) disables the gate; no upper bound is enforced because some /rerank servers emit unbounded logits. Pick a threshold with the rerank-gate bench sweep (bench.RerankGateSweep) against your own reranker.
+`MEMINI_RERANK_MIN_SCORE` drops rerank candidates whose cross-encoder relevance score falls below it, across the whole `MEMINI_RERANK_POOL` before the recall limit is applied. Cross-encoders emit calibrated absolute relevance (unlike the fused retrieval score, whose min-max normalization inflates the best of a bad pool), so an absolute floor here is what cuts the noise tail on queries with no real answer: when everything gates out, recall returns EMPTY rather than the least-irrelevant leftovers. If the gated reranker is unavailable or times out, recall also returns EMPTY rather than silently injecting the ungated composite order. The response `score` field still carries the fused score — rerank scores are never exposed on the wire. Cross-encoder only: the LLM reranker returns an ordinal list with no scores, so combining it with this knob is a boot error rather than a gate that silently never fires. It requires an enabled cross-encoder reranker. 0 (the default) disables the gate; no upper bound is enforced because some /rerank servers emit unbounded logits. Pick a threshold with the rerank-gate bench sweep (bench.RerankGateSweep) against your own reranker.
 
 ### `MEMINI_RERANK_TIMEOUT`
 
 duration, default `10s`. Set by `Config.RerankTimeout`.
 
-`MEMINI_RERANK_TIMEOUT` bounds a single reranker call; past it, recall degrades to composite order instead of stalling on a slow or congested backend.
+`MEMINI_RERANK_TIMEOUT` bounds a single reranker call. Past it, an ungated reranker degrades to composite order instead of stalling on a slow or congested backend; a reranker with `MEMINI_RERANK_MIN_SCORE` returns empty so the relevance gate stays enforced.
 
 ### `MEMINI_RERANK_MAX_BATCH_CHARS`
 
