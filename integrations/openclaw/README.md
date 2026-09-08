@@ -167,6 +167,13 @@ As an extra backstop, `min_capture_chars` (env `MEMINI_MIN_CAPTURE_CHARS`, defau
 **0** = off) drops a capture whose stripped user turn is shorter than N characters —
 set it (e.g. `30`) if a gateway still emits short residual-noise turns.
 
+`capture_skip_patterns` (a list of substrings, default empty) drops any turn that
+contains one of them, matched case-insensitively across both the user and assistant
+text. Unlike the `[cron:` / `[Subagent Context]` markers above — which must prefix the
+user turn — these match anywhere, so they catch structured markers an integration emits
+mid-reply (e.g. a tool-invocation block like `type: image generation task`) that would
+otherwise be captured verbatim as a durable "fact".
+
 **There is no relevance-score floor knob — by design.** Bounding per-turn volume
 is `recall_limit`'s job, not a score gate, because benchmarking
 (`cmd/bench -vec-gate`) showed neither score can decide "inject nothing when

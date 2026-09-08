@@ -26,6 +26,7 @@
       "skip_without_agent": { "type": "boolean" },
       "skip_system_turns": { "type": "boolean" },
       "system_kinds": { "type": "array", "items": { "type": "string" } },
+      "capture_skip_patterns": { "type": "array", "items": { "type": "string" } },
       "fallback_on_error": { "type": "boolean" },
       "timeout_ms": { "type": "number" },
       "expose_tools": { "type": "boolean" },
