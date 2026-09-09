@@ -98,6 +98,10 @@ func applyBriefingBudget(b *Briefing, maxTokens int, concise bool) int {
 		}
 		return sec
 	}
+	// b.Handoffs is deliberately not filled: a pointer is one line naming an id
+	// to fetch, and starving it would hide the existence of the prompt a
+	// previous session wrote for this one — the one item whose absence a fresh
+	// session cannot detect.
 	b.Pinned = fill(b.Pinned)
 	b.Facts = fill(b.Facts)
 	b.Procedures = fill(b.Procedures)

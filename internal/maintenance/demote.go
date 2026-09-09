@@ -14,6 +14,14 @@ import (
 // always surfaced in a session briefing.
 const PinnedTag = "pinned"
 
+// HandoffTag marks a memory as a session handoff: the full fresh-session
+// prompt a previous session wrote for the next one. Like a pin it is exempt
+// from retro-tiering demotion, but it is otherwise the opposite of a pin — it
+// is held OUT of recall and out of the briefing's content sections, and only a
+// one-line pointer to it is injected, because the content is a 100-300 line
+// prompt meant to be pulled deliberately, never sprayed into every session.
+const HandoffTag = "handoff"
+
 // demoteConfidenceFloor is the corroboration below which an old, unused durable
 // memory is demoted. Memories without tracked confidence (legacy rows, and any
 // short-term memory) report 1.0, so they are always above the floor and never
@@ -67,7 +75,7 @@ func DemoteStale(ctx context.Context, st store.Store, olderThan, now time.Time, 
 			if m.EffectiveConfidence(now) >= demoteConfidenceFloor {
 				continue
 			}
-			if slices.Contains(m.Tags, PinnedTag) {
+			if slices.Contains(m.Tags, PinnedTag) || slices.Contains(m.Tags, HandoffTag) {
 				continue
 			}
 			if err := st.Retier(ctx, ns, m.ID, memory.TierEpisodic, &exp); err != nil {

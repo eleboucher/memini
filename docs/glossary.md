@@ -31,6 +31,20 @@ if you find a use that doesn't, it's a bug worth a PR.
   binds a project to a namespace; a pinned memory is content that refuses
   to be forgotten. Prefer the two-word form "pinned memory" in prose.
 
+- **handoff** — a memory tagged `handoff` holding the full fresh-session
+  prompt one session wrote for the next (`/memini:handoff` in the plugin).
+  The inverse of a pinned memory: excluded from recall and from the
+  briefing's content sections, surfaced only as a one-line pointer, because
+  its content is a 100-300 line prompt to be pulled deliberately rather
+  than injected everywhere.
+
+- **handoff slot** — the named lane a handoff occupies (`main` unless the
+  writer names one). One live handoff per slot per namespace: a new save
+  supersedes the slot's previous one, which stays readable through the
+  memory's history. Separate slots let a worktree or a parallel branch each
+  carry their own handoff. Unrelated to a **pin** or a **pinned memory**,
+  and unrelated to the recall reserve's internal "slots".
+
 - **scope** — the per-call read width: `"project"` (primary namespace
   only), `"full"` (default: primary + ancestors + home + links), or
   `"everywhere"` (full, plus the primary's own subtree). REST additionally

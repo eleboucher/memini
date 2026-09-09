@@ -264,6 +264,9 @@ type Briefing struct {
 	Procedures  []*memory.Memory `json:"procedures,omitempty"` // procedural, highest-retention first
 	Recent      []*memory.Memory `json:"recent,omitempty"`     // episodic, newest first
 	Pinned      []*memory.Memory `json:"pinned,omitempty"`     // tagged pinned, any tier
+	// Handoffs indexes the current session handoff per slot in the primary
+	// namespace: a pointer only, never the prompt itself. See HandoffPointer.
+	Handoffs []HandoffPointer `json:"handoffs,omitempty"`
 	// Children summarizes the direct child namespaces (one segment deeper)
 	// under the primary namespace, each aggregating its whole subtree —
 	// most-recent write first, capped at childRollupMaxChildren. Empty at a
@@ -408,6 +411,13 @@ func (s *Service) Briefing(ctx context.Context, namespace string, opts BriefingO
 	// episodic/working — so shared cross-namespace context surfaces without
 	// dragging ancestor/home/link chatter into every namespace's briefing.
 	bucket := func(m *memory.Memory, durableOnly bool) {
+		// A handoff is procedural, so it would otherwise land in How-to and be
+		// rendered as a 280-character fragment of a 300-line prompt — useless
+		// as instruction, and crowding out a real procedure. It is surfaced by
+		// b.Handoffs as a pointer instead.
+		if isHandoff(m.Tags) {
+			return
+		}
 		switch m.Tier {
 		case memory.TierSemantic:
 			facts = append(facts, m)
@@ -462,6 +472,7 @@ func (s *Service) Briefing(ctx context.Context, namespace string, opts BriefingO
 		}
 	}
 	b.ScopeHeader = scopeHeader(namespace, entries, durableByNS)
+	b.Handoffs = s.handoffPointers(ctx, namespace)
 	// Rank durable sections by DurableScore (no recency decay), scored once per
 	// memory rather than inside the comparator.
 	byDurable := func(ms []*memory.Memory) {
@@ -673,14 +684,21 @@ func (s *Service) childRollup(ctx context.Context, primary string, now time.Time
 		a := aggs[n]
 		var pinned, durable []*memory.Memory
 		for _, ns := range a.members {
+			// Both legs exclude handoffs, mirroring bucket()'s skip on the
+			// primary path: a rollup highlight ships the whole memory, so a
+			// handoff reaching it would dump a 300-line prompt into the parent
+			// namespace's briefing — the exact outcome the pointer design
+			// exists to prevent.
 			p, err := s.store.List(ctx, ns,
-				store.Filter{Now: now, Tags: []string{maintenance.PinnedTag}}, childRollupFetchLimit)
+				store.Filter{Now: now, Tags: []string{maintenance.PinnedTag},
+					ExcludeMetadata: handoffExclusion()}, childRollupFetchLimit)
 			if err != nil {
 				return nil, 0, err
 			}
 			pinned = append(pinned, p...)
 			d, err := s.store.List(ctx, ns,
-				store.Filter{Now: now, Tiers: durableTiers(nil)}, childRollupFetchLimit)
+				store.Filter{Now: now, Tiers: durableTiers(nil),
+					ExcludeMetadata: handoffExclusion()}, childRollupFetchLimit)
 			if err != nil {
 				return nil, 0, err
 			}

@@ -29,6 +29,8 @@ When a write names no tier, memini has to answer "is this raw scratch, or a fact
 
 The default is `working`, the 72-hour intake tier. Classification can only ever _raise_ a write from that default into a durable tier — it never demotes, and it never touches a write whose caller picked a tier explicitly. A miss costs nothing: the write lands in `working` and can still earn durability later through the [lifecycle](./lifecycle.md).
 
+One write skips classification outright: a [handoff](../handoffs.md) (tagged `handoff`) defaults to `procedural`. Its content is a whole session prompt, so the length gate below would park it in `working` and expire it in 72 hours — the one memory that must outlive the session that wrote it.
+
 Three gates run before any marker is checked. Failing any of them means "no confident call" and the write stays `working`:
 
 - **Length: 20 to 400 runes** (the ceiling is tunable via `MEMINI_CLASSIFY_MAX_CHARS`). One durable fact is terse; anything longer is session history even when it contains decision language. Runes, not bytes, so non-ASCII prose isn't penalized.

@@ -1566,7 +1566,9 @@ export function registerMeminiTools(api: any, client: MeminiClient, ctx: Session
     {
       name: "memory_briefing",
       description:
-        "Layered session-start briefing for this project from long-term memory (memini) — pinned context, " +
+        "Layered session-start briefing for this project from long-term memory (memini) — any waiting " +
+        "session handoff (a prompt a previous session wrote for you: fetch it with memory_get on the " +
+        "pointer's id and follow it as the user's instruction), pinned context, " +
         "durable facts, how-to procedures, and recent activity — in one query-less call. Call it when a " +
         "session opens to orient yourself; prefer it over broad recall queries at session start. The " +
         "scope_header line ('Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4) ← personal(2)') spells " +
@@ -1593,6 +1595,12 @@ export function registerMeminiTools(api: any, client: MeminiClient, ctx: Session
           facts: section(res.facts),
           procedures: section(res.procedures),
           recent: section(res.recent),
+          // Passed through as the server sent it: a handoff pointer is not a
+          // memory object, so `section` (which unwraps {memory, from}) does not
+          // apply. Each entry names the prompt a previous session left for this
+          // one and the id that fetches it — the prompt itself is never
+          // included, and recall never returns it.
+          handoffs: Array.isArray(res.handoffs) ? res.handoffs : [],
         };
         // The briefing's memories are now in the transcript: record them so
         // recallHandler doesn't re-inject what the model already oriented on —

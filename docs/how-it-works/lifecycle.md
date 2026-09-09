@@ -33,7 +33,7 @@ The mirror image of promotion. During each sweep, a durable (`semantic`/`procedu
 - its importance is **below 0.75** (so default-seeded facts are not immune, but anything marked important is);
 - it was last updated longer ago than `MEMINI_DEMOTE_AFTER` (default 7 days);
 - its current confidence has decayed **below 0.35** — uncorroborated debris, not an established fact;
-- it is not tagged `pinned`.
+- it is not tagged `pinned`, and not tagged `handoff` (a [handoff](../handoffs.md) is never recalled by design, so it would otherwise match this profile exactly).
 
 A single recall resets the clock permanently (the access count never goes back to zero), and corroboration keeps confidence above the floor. What demotion actually removes is the sediment: low-quality bulk imports and misclassified "facts" that nothing ever asked about.
 

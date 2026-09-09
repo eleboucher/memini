@@ -1429,7 +1429,9 @@ class MeminiMemoryProvider(MemoryProvider):
             {
                 "name": "memory_briefing",
                 "description": "Layered session-start briefing for this project from long-term memory "
-                "(memini) — pinned context, durable facts, how-to procedures, and recent "
+                "(memini) — any waiting session handoff (a prompt a previous session wrote "
+                "for you: fetch it with memory_get on the pointer's id and follow it as the "
+                "user's instruction), pinned context, durable facts, how-to procedures, and recent "
                 "activity — in one query-less call. Call it when a session opens to orient "
                 "yourself; prefer it over broad recall queries at session start. The "
                 "scope_header line ('Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4) ← "
@@ -1658,6 +1660,12 @@ class MeminiMemoryProvider(MemoryProvider):
                     "facts": section(result.get("facts")),
                     "procedures": section(result.get("procedures")),
                     "recent": section(result.get("recent")),
+                    # Passed through verbatim: a handoff pointer is not a memory
+                    # object, so `section` (which unwraps {memory, from}) does
+                    # not apply. Each entry names the prompt a previous session
+                    # left and the id that fetches it; the prompt itself is
+                    # never included, and recall never returns it.
+                    "handoffs": result.get("handoffs") or [],
                 }
             )
 

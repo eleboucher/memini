@@ -1371,6 +1371,16 @@ components:
             client keep memories it has already injected out of recall and
             still receive the next-best fresh hits, instead of filtering
             client-side after the top-limit slots are spent.
+        include_handoffs:
+          type: boolean
+          default: false
+          description: >
+            When true, stored session handoffs are eligible for this search.
+            Default (false) excludes them: a handoff is a 100-300 line prompt
+            that shares surface with almost any query about the project, so
+            leaving it in the corpus crowds real facts out of the top results.
+            Handoffs are reached deliberately, through the briefing pointer and
+            GET /v1/memories/{id}. Opt in only to search across handoffs.
         include_fresh_turns:
           type: boolean
           default: false
@@ -1789,6 +1799,17 @@ components:
           type: array
           description: Pinned memories (any tier).
           items: { $ref: "#/components/schemas/BriefingItem" }
+        handoffs:
+          type: array
+          description: >
+            The session handoff waiting in each slot of the briefed namespace,
+            one entry per slot, ordered by slot name. A pointer only — never
+            the prompt text, which runs to hundreds of lines and is fetched on
+            demand with GET /v1/memories/{id}. Drawn from the briefed namespace
+            alone, never the ancestor/link cascade: a handoff says where THIS
+            project's work stands. Exempt from the `max_tokens` budget, which
+            never drops a pointer. Omitted when no slot holds one.
+          items: { $ref: "#/components/schemas/HandoffPointer" }
         children:
           type: array
           nullable: true
@@ -1805,6 +1826,50 @@ components:
             Total items dropped across the four sections by the request's
             `max_tokens` budget. Absent — never an explicit 0 — when no
             budget was set or everything fit.
+    HandoffPointer:
+      type: object
+      required: [id, slot, created_at]
+      properties:
+        id:
+          type: string
+          description: The handoff memory's id; fetch the prompt with GET /v1/memories/{id}.
+        slot:
+          type: string
+          description: >
+            The slot this handoff occupies ("main" unless the writer named
+            one). One live handoff per slot: a new write to a slot supersedes
+            its predecessor, which stays readable through the memory's history.
+            Separate slots let parallel lines of work (a worktree, a feature
+            branch) each carry their own handoff in one namespace.
+        summary:
+          type: string
+          description: The prompt's one-line summary, typically its title line.
+        created_at:
+          type: string
+          format: date-time
+        harness:
+          type: string
+          description: >
+            The agent harness that wrote the prompt (e.g. "claude-code",
+            "cursor"), so a session in a different harness knows before
+            fetching that parts of the prompt may name tools it lacks.
+        lines:
+          type: integer
+          description: >
+            The prompt's line count as its writer measured it, so a reader can
+            judge the context cost of pulling it in.
+        consumed_at:
+          type: string
+          description: >
+            When some session last resumed this handoff, if any — RFC3339 by
+            convention, but passed through verbatim as the resuming client
+            stamped it rather than parsed, so a malformed value is visible
+            instead of silently dropped. A resumed
+            handoff stays listed: it is still the truth about where the work
+            stands, and hiding it would strand a session interrupted mid-resume.
+        consumed_by:
+          type: string
+          description: Which session or harness resumed it.
     BriefingItem:
       type: object
       required: [memory]

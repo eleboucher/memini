@@ -39,7 +39,7 @@ Two layers run at every `Stop`, both **on by default** so the plugin produces re
 - **Turn capture** (`MEMINI_CAPTURE_TURNS`): the last user→assistant turn is stored as an **episodic** memory (deduped on the assistant message id), the same automatic per-turn recall layer the opencode plugin gets from `session.idle`. Set to `0` to disable.
 - **Memory directive** (`MEMINI_INLINE_EXTRACT`): `SessionStart` injects a short directive asking the agent to persist durable facts via the `memory_remember` MCP tool (tier `semantic`) instead of printing them into its reply. After a context **compaction**, `SessionStart` re-fires and appends a short **recovery note** to that directive, prompting the agent to flush any durable fact it learned before the compaction — which may have scrolled out of the rebuilt context — but never saved. The note rides this same switch. `Stop` still scans transcripts for legacy `<memory>` blocks and persists those too, as a back-compat fallback for sessions started under the old directive. Model-curated, so it stays low-noise. Set to `0` to disable both.
 
-Plus 9 skills (`remember`, `recall`, `recap`, `forget`, `pin`, `status`, `namespace`, `doctor`, `backfill`) the agent invokes directly.
+Plus 10 skills (`remember`, `recall`, `recap`, `forget`, `pin`, `handoff`, `status`, `namespace`, `doctor`, `backfill`) the agent invokes directly.
 
 ### Turning session digests off (`MEMINI_SESSION_DIGEST=0`)
 
@@ -70,6 +70,7 @@ Turning digests off leaves the other two alone, so the agent keeps saving decisi
 | `/memini:remember`  | Save a fact (drives `memory_remember`)                                              |
 | `/memini:recall`    | Search memory (drives `memory_recall`)                                              |
 | `/memini:pin`       | Pin a memory so it surfaces in every briefing                                       |
+| `/memini:handoff`   | Save, list, or resume the fresh-session prompt for this project                     |
 | `/memini:forget`    | Delete a memory (confirms first)                                                    |
 | `/memini:doctor`    | Store-level diagnostics — **needs the `memini` binary**                             |
 | `/memini:backfill`  | Import past sessions — **needs the `memini` binary**                                |

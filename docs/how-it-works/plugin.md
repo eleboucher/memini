@@ -32,11 +32,13 @@ The MCP side has the same problem in a harder shape: the headers helper that sta
 
 ## Injection surface 1: the session briefing
 
-One query-less, header-scoped briefing call returns a layered view — pinned memories, durable facts, how-to procedures, and recent activity — already ranked server-side, plus a scope header naming the ancestor chain the namespace inherits from. The hook renders it as one read-only block:
+One query-less, header-scoped briefing call returns a layered view — any waiting session handoff, pinned memories, durable facts, how-to procedures, and recent activity — already ranked server-side, plus a scope header naming the ancestor chain the namespace inherits from. The hook renders it as one read-only block:
 
 ```
 <memini-context project="acme/phoenix" read-only>
 Scope: acme/phoenix ← acme(4)
+Handoff waiting (not loaded — fetch to resume):
+- [main] (2026-09-09, from claude-code, 212 lines): "execute stage 4" — memory_get 1a2b3c4d5e6f7a8b
 Pinned:
 - Deploys go through the staging cluster first — never straight to prod [m:9f21ab04]
 Decisions & conventions:
@@ -46,8 +48,9 @@ Recent activity:
 </memini-context>
 ```
 
-Three details worth knowing:
+Four details worth knowing:
 
+- **A handoff is a pointer, not content.** A [handoff](../glossary.md) is the full fresh-session prompt a previous session wrote for this one — 100-300 lines, one live prompt per slot. Injecting it every session would swamp the budget and re-issue stale instructions, so the briefing carries only a line naming the slot, its provenance and the id that fetches it. It is listed first, because "what was I doing" is what a fresh session needs before any fact it might reason with, and it is exempt from the token budget on both layers: it is the one item whose absence a fresh session has no way to detect. Handoffs are likewise excluded from recall by default.
 - **Token budget with a drop order.** The briefing has a token ceiling (default 600, enforced both server-side and as a client fallback). When it overflows, whole sections are dropped from the tail first: recent, then procedures, then facts. Pinned is the curated top-of-mind set and is never dropped whole — as a last resort its lowest-ranked bullets are trimmed. Any trim, on either layer, is announced with a visible truncation footer.
 - **Skip on unchanged content.** SessionStart can fire more than once per session (startup, then resume, clear, or compact). When the briefing is byte-identical to what was already injected, re-injecting only spends tokens, so it is skipped — except right after a compaction, where the original injection was summarized away with the rest of the context and the skip's premise is false. Resume keeps the skip: its context is intact.
 - **The directive follows the fire source.** A fresh context (startup, clear) gets the standing save-policy instruction; a resume gets nothing (the transcript replay already carries it); a compaction gets only a short "flush unsaved facts" recovery nudge.

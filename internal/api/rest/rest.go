@@ -486,6 +486,9 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 	if req.IncludeFreshTurns != nil {
 		in.IncludeFreshTurns = *req.IncludeFreshTurns
 	}
+	if req.IncludeHandoffs != nil {
+		in.IncludeHandoffs = *req.IncludeHandoffs
+	}
 	if req.QueryRewrite != nil {
 		in.QueryRewrite = *req.QueryRewrite
 	}
@@ -936,6 +939,7 @@ func (h *Server) GetBriefing(w http.ResponseWriter, r *http.Request, params GetB
 		Procedures: apiBriefingItems(b.Procedures, origins, format),
 		Recent:     apiBriefingItems(b.Recent, origins, format),
 		Pinned:     apiBriefingItems(b.Pinned, origins, format),
+		Handoffs:   apiHandoffPointers(b.Handoffs),
 	}
 	if len(b.Degraded) > 0 {
 		resp.Degraded = &b.Degraded
@@ -1026,11 +1030,52 @@ func apiMemories(mems []*memory.Memory, format contentFormat) *[]Memory {
 	return &out
 }
 
+// apiHandoffPointers maps the briefing's handoff index onto the wire shape.
+// It ignores the content-format projection: a pointer carries no memory
+// content to truncate, only a summary the writer already wrote as one line.
+func apiHandoffPointers(ps []service.HandoffPointer) *[]HandoffPointer {
+	if len(ps) == 0 {
+		return nil
+	}
+	out := make([]HandoffPointer, len(ps))
+	for i, p := range ps {
+		out[i] = HandoffPointer{
+			Id:         p.ID,
+			Slot:       p.Slot,
+			CreatedAt:  p.CreatedAt,
+			Summary:    optStr(p.Summary),
+			Harness:    optStr(p.Harness),
+			Lines:      optInt(p.Lines),
+			ConsumedAt: optStr(p.ConsumedAt),
+			ConsumedBy: optStr(p.ConsumedBy),
+		}
+	}
+	return &out
+}
+
+// optStr returns nil for the empty string, so an unset optional field is
+// omitted from the JSON rather than shipped as "".
+func optStr(v string) *string {
+	if v == "" {
+		return nil
+	}
+	return &v
+}
+
+// optInt is optStr for a count: 0 means unset.
+func optInt(v int) *int {
+	if v == 0 {
+		return nil
+	}
+	return &v
+}
+
 // apiBriefingItems maps a briefing section's memories to the spec-generated
 // BriefingItem shape (memory + read-set provenance), returning nil for an
 // empty slice so the field is omitted from the response. origins is built
 // once per request via service.OriginMap from the Briefing call's ReadSet
 // out-param; see service.ReadSetFrom for the provenance rendering rules.
+//
 // format is the briefing's disclosure projection (?format=): concise uses
 // the 280-rune briefing cap so server-side concise text is never
 // re-truncated by the client's briefing render.

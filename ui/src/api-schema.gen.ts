@@ -737,6 +737,11 @@ export interface components {
             /** @description Drop memories with these ids, applied before ranking and the limit so an excluded hit never consumes a result slot. Lets a long-lived client keep memories it has already injected out of recall and still receive the next-best fresh hits, instead of filtering client-side after the top-limit slots are spent. */
             exclude_ids?: string[];
             /**
+             * @description When true, stored session handoffs are eligible for this search. Default (false) excludes them: a handoff is a 100-300 line prompt that shares surface with almost any query about the project, so leaving it in the corpus crowds real facts out of the top results. Handoffs are reached deliberately, through the briefing pointer and GET /v1/memories/{id}. Opt in only to search across handoffs.
+             * @default false
+             */
+            include_handoffs: boolean;
+            /**
              * @description When true, disable the server-side temporal echo guard for this call: just-captured episodic turn captures (metadata.format="turn" younger than the server's window, default 5m) are NOT dropped. Default (false) drops them — a just-captured turn is live context, not long-term memory, and echoing it back makes the agent parrot itself. Opt in only when you genuinely need fresh turns.
              * @default false
              */
@@ -937,10 +942,30 @@ export interface components {
             recent?: components["schemas"]["BriefingItem"][];
             /** @description Pinned memories (any tier). */
             pinned?: components["schemas"]["BriefingItem"][];
+            /** @description The session handoff waiting in each slot of the briefed namespace, one entry per slot, ordered by slot name. A pointer only — never the prompt text, which runs to hundreds of lines and is fetched on demand with GET /v1/memories/{id}. Drawn from the briefed namespace alone, never the ancestor/link cascade: a handoff says where THIS project's work stands. Exempt from the `max_tokens` budget, which never drops a pointer. Omitted when no slot holds one. */
+            handoffs?: components["schemas"]["HandoffPointer"][];
             /** @description Direct-child namespace rollups (one segment deeper than the briefed namespace), each aggregating its whole subtree: all-tier live total plus up to 3 pinned and 3 recent-durable highlight memories. Ordered by most-recent write, capped at 10 children; omitted at a leaf namespace. */
             children?: components["schemas"]["BriefingChild"][] | null;
             /** @description Total items dropped across the four sections by the request's `max_tokens` budget. Absent — never an explicit 0 — when no budget was set or everything fit. */
             omitted?: number;
+        };
+        HandoffPointer: {
+            /** @description The handoff memory's id; fetch the prompt with GET /v1/memories/{id}. */
+            id: string;
+            /** @description The slot this handoff occupies ("main" unless the writer named one). One live handoff per slot: a new write to a slot supersedes its predecessor, which stays readable through the memory's history. Separate slots let parallel lines of work (a worktree, a feature branch) each carry their own handoff in one namespace. */
+            slot: string;
+            /** @description The prompt's one-line summary, typically its title line. */
+            summary?: string;
+            /** Format: date-time */
+            created_at: string;
+            /** @description The agent harness that wrote the prompt (e.g. "claude-code", "cursor"), so a session in a different harness knows before fetching that parts of the prompt may name tools it lacks. */
+            harness?: string;
+            /** @description The prompt's line count as its writer measured it, so a reader can judge the context cost of pulling it in. */
+            lines?: number;
+            /** @description When some session last resumed this handoff, if any — RFC3339 by convention, but passed through verbatim as the resuming client stamped it rather than parsed, so a malformed value is visible instead of silently dropped. A resumed handoff stays listed: it is still the truth about where the work stands, and hiding it would strand a session interrupted mid-resume. */
+            consumed_at?: string;
+            /** @description Which session or harness resumed it. */
+            consumed_by?: string;
         };
         BriefingItem: {
             memory: components["schemas"]["Memory"];

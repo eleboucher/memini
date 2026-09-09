@@ -133,6 +133,11 @@ const serverInstructions = "memini is persistent cross-session memory for this a
 	"how-tos, recent activity, and a Scope line spelling out the ancestor chain you inherit from, " +
 	"e.g. \"Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4) ← personal(2)\"). Prefer it over " +
 	"broad recall queries.\n" +
+	"- A briefing handoffs entry means a previous session left you a written prompt for the work " +
+	"you are picking up: fetch it with memory_get on that id and follow it as the user's own " +
+	"instruction, not as background. The prompt itself is never injected (it runs to hundreds of " +
+	"lines) and recall never returns it, so the pointer is the only notice you get. After acting " +
+	"on it, stamp consumed_at/consumed_by via memory_update, re-sending its existing tags.\n" +
 	"- Saving memories is your job — do not wait to be asked. When you learn something durable — " +
 	"a decision and its rationale, a bug's root cause, a project convention, a stated user " +
 	"preference or a correction (a correction IS a preference), an environment quirk, a " +
@@ -772,6 +777,8 @@ type recallArgs struct {
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
 	ExcludeIDs []string `json:"exclude_ids,omitempty" jsonschema:"drop memories with these ids, before ranking and limit (an excluded hit never consumes a result slot); for skipping memories already seen this session"`
 	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
+	IncludeHandoffs bool `json:"include_handoffs,omitempty" jsonschema:"also return stored session handoffs (excluded by default — they are long prompts reached through the briefing pointer and memory_get, not through recall); only when searching across handoffs themselves"`
+	//nolint:lll // the jsonschema description is agent-facing documentation and cannot be wrapped
 	IncludeFreshTurns bool `json:"include_fresh_turns,omitempty" jsonschema:"also return this session's just-captured conversation turns (hidden by default — they are still in your live context); only for 'what did I just say' queries"`
 	QueryRewrite      bool `json:"query_rewrite,omitempty" jsonschema:"rewrite query into 2-3 variants and fuse via RRF"`
 	Limit             int  `json:"limit,omitempty" jsonschema:"max results (default 10)"`
@@ -883,6 +890,7 @@ func (t *tools) recall(ctx context.Context, _ *mcpsdk.CallToolRequest, in recall
 		ExcludeMetadata:   in.ExcludeMetadata,
 		ExcludeIDs:        in.ExcludeIDs,
 		IncludeFreshTurns: in.IncludeFreshTurns,
+		IncludeHandoffs:   in.IncludeHandoffs,
 		QueryRewrite:      in.QueryRewrite,
 		Limit:             in.Limit,
 		MinRankScore:      in.MinRankScore,
@@ -936,9 +944,13 @@ type briefingResult struct {
 	// "Scope: acme/phoenix/api ← acme/phoenix(3) ← acme(4) ← personal(2), +1 link".
 	ScopeHeader string       `json:"scope_header,omitempty"`
 	Pinned      []recallItem `json:"pinned,omitempty"`
-	Facts       []recallItem `json:"facts,omitempty"`
-	Procedures  []recallItem `json:"procedures,omitempty"`
-	Recent      []recallItem `json:"recent,omitempty"`
+	// Handoffs indexes the session handoff waiting in each slot: an id, a
+	// summary and its size, never the prompt itself. Fetch one with memory_get
+	// when resuming that work — see service.HandoffPointer.
+	Handoffs   []service.HandoffPointer `json:"handoffs,omitempty"`
+	Facts      []recallItem             `json:"facts,omitempty"`
+	Procedures []recallItem             `json:"procedures,omitempty"`
+	Recent     []recallItem             `json:"recent,omitempty"`
 	// Children is the direct-child rollup, rendered compactly — titles only,
 	// never full memory objects: the briefing is LLM-facing context, so
 	// token size matters (REST carries the full objects for the admin UI).
@@ -1028,6 +1040,7 @@ func (t *tools) briefing(ctx context.Context, _ *mcpsdk.CallToolRequest, in brie
 		Namespace:   b.Namespace,
 		ScopeHeader: b.ScopeHeader,
 		Pinned:      briefingItems(b.Pinned, origins),
+		Handoffs:    b.Handoffs,
 		Facts:       briefingItems(b.Facts, origins),
 		Procedures:  briefingItems(b.Procedures, origins),
 		Recent:      briefingItems(b.Recent, origins),

@@ -15,6 +15,7 @@ Start with the recipe closest to what you are doing, then reach for the referenc
 | Look up a setting                              | [Configuration](reference/configuration.md)                                                 |
 | Look up an MCP tool, CLI command or endpoint   | [MCP tools](reference/mcp-tools.md), [CLI](reference/cli.md), [REST](reference/rest-api.md) |
 | Understand how memini decides what to remember | [Tiers](tiers.md), [Categories](categories.md)                                              |
+| Hand work to a fresh session                   | [Handoffs](handoffs.md)                                                                     |
 | Understand what happens when I save a memory   | [The write path](how-it-works/write-path.md)                                                |
 | Understand when memories get pulled            | [Recall](how-it-works/recall.md)                                                            |
 | Understand where memories live                 | [Namespaces](how-it-works/namespaces.md)                                                    |
@@ -35,6 +36,7 @@ Read these when you want to know why memini behaves the way it does.
 - [**Tiers**](tiers.md). Every memory is `working`, `episodic`, `semantic` or `procedural`. The tier decides how long it survives and whether it is allowed to cross a namespace boundary.
 - [**Scopes**](scopes.md). A write lands in exactly one namespace. A read can see more than one. This explains how the read set is composed, and it is the page to read if recall is returning too much or too little.
 - [**Categories**](categories.md). An orthogonal topic axis, for filtering by what a memory is about rather than how durable it is.
+- [**Handoffs**](handoffs.md). The full prompt one session writes for the next. The inverse of a pinned memory: held out of recall, surfaced as a one-line pointer, one live per slot.
 - [**API keys**](api-keys.md). Keys are identity, not isolation: any key can read any namespace. Each carries its own home and default namespace, plus two narrow authorization bits — `admin` (manage keys and server defaults) and `read_only` (refuse every write, for unattended agents).
 
 ## How it works

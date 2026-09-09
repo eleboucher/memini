@@ -190,6 +190,57 @@ function formatMemory(m, section, labels, from) {
   return `[${tagParts.join(" · ")}] ${parts[0]}${prov}${handle}`;
 }
 
+// formatHandoffs renders the briefing's per-slot handoff index as one bullet
+// each: what the prompt is, who wrote it, how big it is, and the id that
+// fetches it.
+//
+// Deliberately NOT capped like a memory bullet. The 280-code-point cap exists
+// because a memory bullet carries content; a pointer carries a one-line
+// summary its writer already wrote to be one line, plus fixed-width metadata.
+// Truncating it could cut the very id it exists to convey.
+//
+// EVERY field is escaped, the id included. An id is normally server-minted hex,
+// but memory_remember accepts a caller-supplied `id` and stores it verbatim, so
+// a write that reached the server through a poisoned tool call can put arbitrary
+// text here — and unlike a memory bullet's 8-character [m:…] handle, the pointer
+// renders the id in full. An unescaped one could close the <memini-context>
+// wrapper and inject instructions into the session's own briefing.
+function ptrField(value, max) {
+  // Escape, flatten, then cap — in that order, and on every field including
+  // the id. Flattening matters as much as escaping here: a pointer is one
+  // bullet by contract, so an embedded newline would let stored text forge a
+  // second briefing line that reads as if the hook emitted it. Capping bounds
+  // a block the token budget deliberately does not trim. (This mirrors pi's
+  // boundedInjectedText, which has always collapsed whitespace.)
+  return escapeMeminiTags(String(value ?? ""))
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, max);
+}
+
+function formatHandoffs(handoffs) {
+  if (!Array.isArray(handoffs)) return [];
+  const out = [];
+  for (const h of handoffs) {
+    if (!h || typeof h.id !== "string" || !h.id) continue;
+    const slot = ptrField(h.slot || "main", 200);
+    const facts = [];
+    if (h.created_at) facts.push(String(h.created_at).slice(0, 10));
+    if (h.harness) facts.push(`from ${ptrField(h.harness, 40)}`);
+    if (Number.isFinite(h.lines) && h.lines > 0) facts.push(`${h.lines} lines`);
+    // A resumed handoff stays listed — see HandoffPointer.ConsumedAt — but says
+    // so, or a session would silently redo work another session already picked up.
+    if (h.consumed_at) {
+      const by = h.consumed_by ? ` by ${ptrField(h.consumed_by, 40)}` : "";
+      facts.push(`already resumed ${String(h.consumed_at).slice(0, 10)}${by}`);
+    }
+    const summary = h.summary ? `: "${ptrField(h.summary, 300)}"` : "";
+    const meta = facts.length > 0 ? ` (${facts.join(", ")})` : "";
+    out.push(`- [${slot}]${meta}${summary} — memory_get ${ptrField(h.id, 64)}`);
+  }
+  return out;
+}
+
 // readBriefingOpts pulls the per-section caps out of the resolved session
 // context (env override > server-merged setting > built-in default). Defaults
 // mirror the historical "5/5/5/3 per section" so a config-less install gets
@@ -352,7 +403,12 @@ async function main() {
   // session EXCEPT the ones where the namespace was empty — precisely the
   // sessions where saving matters most, because nothing has been saved yet.
   const empty =
-    !b || (!b.pinned?.length && !b.facts?.length && !b.procedures?.length && !b.recent?.length);
+    !b ||
+    (!b.pinned?.length &&
+      !b.facts?.length &&
+      !b.procedures?.length &&
+      !b.recent?.length &&
+      !b.handoffs?.length);
   if (empty) {
     // Emptiness is only assertable when the server answered: a non-null `b` is a
     // reachable-but-empty namespace, so name it (the briefing already ran — don't
@@ -405,6 +461,12 @@ async function main() {
   // surfaced), then drop whole blocks from the tail (recent → procedures →
   // facts → pinned) until the total fits the global token budget. Pinned is
   // the curated "top-of-mind" set so it has the lowest drop priority.
+  // Handoff pointers are rendered outside `blocks` on purpose: they are exempt
+  // from the token budget below, mirroring the server's own exemption in
+  // applyBriefingBudget. A pointer is one line naming an id to fetch, and it is
+  // the one item whose absence a fresh session cannot detect — drop it and the
+  // session simply never learns that the previous one left it instructions.
+  const handoffLines = formatHandoffs(b.handoffs);
   const blocks = [];
   const sections = [
     { label: "Pinned", reason: "pinned", mems: b.pinned },
@@ -444,7 +506,7 @@ async function main() {
   // empty- and unchanged-briefing paths above: the memory directive must still
   // be emitted, or a session with only blank-content memories is silently told
   // nothing to save.
-  if (blocks.length === 0) {
+  if (blocks.length === 0 && handoffLines.length === 0) {
     emitContext(directive, host);
     return;
   }
@@ -482,6 +544,13 @@ async function main() {
   // Escape like stored content: scope_header is server-built from namespace
   // names, which may contain "<", so a forged `<memini` tag must not survive raw.
   if (b.scope_header) lines.push(escapeMeminiTags(b.scope_header));
+
+  // Ahead of every content section: a handoff is the answer to "what was I
+  // doing", which a fresh session needs before any fact it might reason with.
+  if (handoffLines.length > 0) {
+    lines.push("Handoff waiting (not loaded — fetch to resume):");
+    lines.push(...handoffLines);
+  }
 
   let totalDropped = 0;
   for (const b of blocks) {

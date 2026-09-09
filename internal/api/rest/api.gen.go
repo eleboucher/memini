@@ -754,8 +754,11 @@ type Briefing struct {
 	Degraded *[]string `json:"degraded,omitempty"`
 
 	// Facts Durable semantic facts, highest-retention first.
-	Facts     *[]BriefingItem `json:"facts,omitempty"`
-	Namespace string          `json:"namespace"`
+	Facts *[]BriefingItem `json:"facts,omitempty"`
+
+	// Handoffs The session handoff waiting in each slot of the briefed namespace, one entry per slot, ordered by slot name. A pointer only — never the prompt text, which runs to hundreds of lines and is fetched on demand with GET /v1/memories/{id}. Drawn from the briefed namespace alone, never the ancestor/link cascade: a handoff says where THIS project's work stands. Exempt from the `max_tokens` budget, which never drops a pointer. Omitted when no slot holds one.
+	Handoffs  *[]HandoffPointer `json:"handoffs,omitempty"`
+	Namespace string            `json:"namespace"`
 
 	// Omitted Total items dropped across the four sections by the request's `max_tokens` budget. Absent — never an explicit 0 — when no budget was set or everything fit.
 	Omitted *int `json:"omitted,omitempty"`
@@ -1007,6 +1010,31 @@ type FsckReport struct {
 	ExpiredPurged    int         `json:"expired_purged"`
 	Namespaces       int         `json:"namespaces"`
 	ShortTermEvicted int         `json:"short_term_evicted"`
+}
+
+// HandoffPointer defines model for HandoffPointer.
+type HandoffPointer struct {
+	// ConsumedAt When some session last resumed this handoff, if any — RFC3339 by convention, but passed through verbatim as the resuming client stamped it rather than parsed, so a malformed value is visible instead of silently dropped. A resumed handoff stays listed: it is still the truth about where the work stands, and hiding it would strand a session interrupted mid-resume.
+	ConsumedAt *string `json:"consumed_at,omitempty"`
+
+	// ConsumedBy Which session or harness resumed it.
+	ConsumedBy *string   `json:"consumed_by,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+
+	// Harness The agent harness that wrote the prompt (e.g. "claude-code", "cursor"), so a session in a different harness knows before fetching that parts of the prompt may name tools it lacks.
+	Harness *string `json:"harness,omitempty"`
+
+	// Id The handoff memory's id; fetch the prompt with GET /v1/memories/{id}.
+	Id string `json:"id"`
+
+	// Lines The prompt's line count as its writer measured it, so a reader can judge the context cost of pulling it in.
+	Lines *int `json:"lines,omitempty"`
+
+	// Slot The slot this handoff occupies ("main" unless the writer named one). One live handoff per slot: a new write to a slot supersedes its predecessor, which stays readable through the memory's history. Separate slots let parallel lines of work (a worktree, a feature branch) each carry their own handoff in one namespace.
+	Slot string `json:"slot"`
+
+	// Summary The prompt's one-line summary, typically its title line.
+	Summary *string `json:"summary,omitempty"`
 }
 
 // HandshakeRequest Client→server handshake input: what the client currently knows about the project and about itself. project.cwd_basename is the only field every caller can always supply (even a bare directory with no git repo); everything else sharpens the resolution.
@@ -1354,7 +1382,10 @@ type SearchRequest struct {
 	IncludeExpired  *bool              `json:"include_expired,omitempty"`
 
 	// IncludeFreshTurns When true, disable the server-side temporal echo guard for this call: just-captured episodic turn captures (metadata.format="turn" younger than the server's window, default 5m) are NOT dropped. Default (false) drops them — a just-captured turn is live context, not long-term memory, and echoing it back makes the agent parrot itself. Opt in only when you genuinely need fresh turns.
-	IncludeFreshTurns *bool    `json:"include_fresh_turns,omitempty"`
+	IncludeFreshTurns *bool `json:"include_fresh_turns,omitempty"`
+
+	// IncludeHandoffs When true, stored session handoffs are eligible for this search. Default (false) excludes them: a handoff is a 100-300 line prompt that shares surface with almost any query about the project, so leaving it in the corpus crowds real facts out of the top results. Handoffs are reached deliberately, through the briefing pointer and GET /v1/memories/{id}. Opt in only to search across handoffs.
+	IncludeHandoffs   *bool    `json:"include_handoffs,omitempty"`
 	IncludeSuperseded *bool    `json:"include_superseded,omitempty"`
 	Levels            *[]Level `json:"levels,omitempty"`
 	Limit             *int     `json:"limit,omitempty"`

@@ -70,13 +70,16 @@ The distinction matters more than it looks: an agent handed fewer results with n
 
 ## Briefing anatomy
 
-The briefing is the query-less pull: when a session opens, the plugin asks for a structured summary of the namespace instead of searching for anything in particular. It has four sections plus a subtree index:
+The briefing is the query-less pull: when a session opens, the plugin asks for a structured summary of the namespace instead of searching for anything in particular. It has four sections, a handoff index and a subtree index:
 
+- **Handoffs** — one pointer per slot to a [handoff](../handoffs.md): the full prompt a previous session wrote for this one. A pointer, never the prompt, and drawn from the briefed namespace alone rather than the cascade. Exempt from the token budget below.
 - **Pinned** — memories tagged `pinned`, any tier, always surfaced.
 - **Facts** — semantic memories, ranked by durable score (a quality ranking with no recency decay).
 - **Procedures** — procedural how-tos, same ranking.
 - **Recent** — episodic entries, newest first, with just-captured turns filtered out (the briefing's version of the turn-echo guard).
 - **Children** — a rollup of direct child namespaces (counts and a few highlights each), so a parent namespace's briefing indexes its subtree without searching it.
+
+Handoffs are also excluded from search itself, unless a call passes `include_handoffs`. A 100-300 line prompt names the project's files, constraints and vocabulary all at once, so it would rank plausibly for nearly every question about that project and spend top-k slots on a document that answers none of them specifically. See [handoffs](../handoffs.md).
 
 Each section is capped (5 items by default; the plugin asks for 3 recent). Cascade legs contribute durable memories only, so an ancestor's facts show up but its chatter never does. The token budget fills whole items in section order — **pinned, then facts, then procedures, then recent** — so fill order is priority order and the recent section starves first when the budget is tight. The first item overall always ships.
 

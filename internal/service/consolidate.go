@@ -151,7 +151,13 @@ func (s *Service) candidates(ctx context.Context, m *memory.Memory, excludeID st
 	if excludeID != "" {
 		limit++ // room to drop the self-match
 	}
-	f := store.Filter{Tiers: []memory.Tier{memory.TierSemantic, memory.TierProcedural}, Now: s.now()}
+	// ExcludeMetadata drops handoffs: they are procedural, so they would
+	// otherwise be offered to the consolidator as neighbors of an ordinary
+	// procedural write, which can merge content into one (ActionUpdate) or
+	// tombstone it (ActionSupersede). A session prompt is not a claim to be
+	// reconciled, and losing one to an unrelated write is silent data loss.
+	f := store.Filter{Tiers: []memory.Tier{memory.TierSemantic, memory.TierProcedural},
+		ExcludeMetadata: handoffExclusion(), Now: s.now()}
 
 	// Vector leg: semantic similarity.
 	vecCands, err := s.store.VectorSearch(ctx, m.Namespace, m.Embedding, f, limit)

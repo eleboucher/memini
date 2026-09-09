@@ -1213,10 +1213,7 @@ func validateRememberInput(in RememberInput, classifyMaxChars int) (RememberInpu
 	}
 	tier := in.Tier
 	if tier == "" {
-		tier = memory.TierWorking
-		if kind, ok := extract.ClassifyWith(in.Content, classifyMaxChars); ok {
-			tier = kind.Tier()
-		}
+		tier = defaultTier(in, classifyMaxChars)
 	}
 	if !tier.Valid() {
 		return in, tier, invalidInputf("remember: invalid tier %q", tier)
@@ -1224,12 +1221,31 @@ func validateRememberInput(in RememberInput, classifyMaxChars int) (RememberInpu
 	if in.Level != "" && !in.Level.Valid() {
 		return in, tier, invalidInputf("remember: invalid level %q", in.Level)
 	}
+	if err := validateHandoffSlot(in); err != nil {
+		return in, tier, err
+	}
 	ns, err := resolveVisibility(in, tier)
 	if err != nil {
 		return in, tier, err
 	}
 	in.Namespace = ns
 	return in, tier, nil
+}
+
+// defaultTier picks the tier for a write that named none. A handoff goes
+// straight to procedural: its content is a whole session prompt, far past
+// extract.ClassifyWith's max, so the classifier would silently park it in the
+// working tier and expire it in 72 hours — exactly the memory that must
+// outlive the session that wrote it. Every other write falls back to working
+// unless a marker classifies it durable.
+func defaultTier(in RememberInput, classifyMaxChars int) memory.Tier {
+	if isHandoff(in.Tags) {
+		return memory.TierProcedural
+	}
+	if kind, ok := extract.ClassifyWith(in.Content, classifyMaxChars); ok {
+		return kind.Tier()
+	}
+	return memory.TierWorking
 }
 
 // reusableVector returns the stored vector when this write is an update that
@@ -1354,6 +1370,7 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	reportEffectiveTier(in.EffectiveTier, tier)
 	in = s.stampClassifiedTier(in, tier)
 	in = stampAuthor(in)
+	in = stampHandoff(in)
 
 	// Scrub live credentials before anything persists them — content, the
 	// embedding, and the dedup fingerprint are all computed on the redacted
@@ -1467,17 +1484,20 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	// Opt-in consolidation: on fresh writes to durable tiers, let the LLM dedup
 	// or contradiction-resolve against existing memories.
 	durable := tier == memory.TierSemantic || tier == memory.TierProcedural
-	consolidate := in.ID == "" && s.consolidator != nil && durable && s.consolidateMode != ConsolidateOff
+	consolidate := s.shouldConsolidate(in, m, durable)
 
+	// Slot-scoped supersession for a handoff: every live prompt this one
+	// replaces in the same slot, tombstoned after the Upsert below. Empty for
+	// every other write, and for the first handoff in a slot.
+	supersedeIDs := s.priorHandoffIDs(ctx, m, in)
 	// Write-time dedup (non-LLM corpus hygiene): run the split dedup check
 	// when neither the consolidation pipeline nor an explicit ID is in play.
-	var supersedeID string
-	if in.ID == "" && !consolidate {
+	if shouldSplitDedup(in, m, consolidate) {
 		handled, result, sid := s.runSplitDedup(ctx, m, in)
 		if handled {
 			return result, nil
 		}
-		supersedeID = sid
+		supersedeIDs = asIDList(sid)
 	}
 
 	// Sync mode resolves the write against existing memories before storing, so
@@ -1513,7 +1533,7 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	// below), and any near-duplicate merge hint the dedup gate surfaced. Built
 	// by a free function so its branches don't count against Remember's
 	// cyclomatic budget (already at the limit).
-	s.logWriteEvent(ctx, m, existing, writeOutcomeDetail(m.Tier, supersedeID, in.MergeHint))
+	s.logWriteEvent(ctx, m, existing, writeOutcomeDetail(m.Tier, firstID(supersedeIDs), in.MergeHint))
 
 	// A degraded write is durable but vectorless, and its repair state committed
 	// with it above. Wake the repair worker so it runs in milliseconds rather
@@ -1524,7 +1544,7 @@ func (s *Service) Remember(ctx context.Context, in RememberInput) (*memory.Memor
 	// near-duplicate in the background. Deferred to here so a failed Upsert above
 	// can never drop the old fact without a stored replacement. No-op when there
 	// is nothing to supersede.
-	s.autoSupersede(m.Namespace, supersedeID, m.ID, in.AutoSuperseded)
+	s.autoSupersedeAll(m.Namespace, supersedeIDs, m.ID, in.AutoSuperseded)
 
 	// Async mode stores immediately and consolidates in the background.
 	if consolidate && s.consolidateMode == ConsolidateAsync {
@@ -1631,8 +1651,14 @@ const dedupLLMCloseness = 0.05
 //
 // At most one is non-zero; all empty when nothing scores above the threshold.
 func (s *Service) dedupCheck(ctx context.Context, m *memory.Memory) (hit *memory.Memory, hint *MergeHint, supersedeID string) {
+	// ExcludeMetadata drops handoffs from the candidate set. shouldSplitDedup
+	// already keeps a handoff from being the write that triggers this gate, but
+	// without this a normal procedural write could pick a handoff as its
+	// near-duplicate and, under WriteDedupSupersede/Coalesce, tombstone it or
+	// fold unrelated content into it.
 	cands, err := s.store.VectorSearch(ctx, m.Namespace, m.Embedding,
-		store.Filter{Tiers: []memory.Tier{m.Tier}, Now: s.now()}, dedupCandidates)
+		store.Filter{Tiers: []memory.Tier{m.Tier},
+			ExcludeMetadata: handoffExclusion(), Now: s.now()}, dedupCandidates)
 	if err != nil {
 		slog.WarnContext(ctx, "remember: dedup search failed, storing without dedup",
 			"namespace", m.Namespace, "err", err)
@@ -1827,6 +1853,34 @@ func (s *Service) autoSupersede(ns, oldID, newID string, done *bool) {
 	})
 }
 
+// autoSupersedeAll tombstones every predecessor of a write, in the background,
+// once the replacement is durably stored. Normally zero or one; more only when
+// a handoff slot carries strays left by a concurrent write (see
+// priorHandoffIDs). A no-op on an empty list.
+func (s *Service) autoSupersedeAll(ns string, oldIDs []string, newID string, done *bool) {
+	for _, id := range oldIDs {
+		s.autoSupersede(ns, id, newID, done)
+	}
+}
+
+// asIDList wraps a possibly-empty id as a list, nil when empty, so the write
+// path carries one shape whether its predecessor came from dedup or a slot.
+func asIDList(id string) []string {
+	if id == "" {
+		return nil
+	}
+	return []string{id}
+}
+
+// firstID returns the first id, or "" — the one the write event records when a
+// write superseded several.
+func firstID(ids []string) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	return ids[0]
+}
+
 // fingerprintHit returns a live same-tier memory whose normalized content
 // matches in.Content exactly, reinforced and corroborated, when fingerprint
 // dedup applies. ok is false (fall through to a normal write) for an update by
@@ -1926,8 +1980,12 @@ func (s *Service) corroborateNearestAsync(ctx context.Context, m *memory.Memory,
 		return
 	}
 	s.detach(ctx, similarityJobTimeout, func(cctx context.Context) {
+		// ExcludeHandoffs: a handoff is procedural, so it would otherwise sit
+		// in this candidate set and a passing remark near it would grow its
+		// confidence. A session prompt is not a fact to be corroborated.
 		cands, err := s.store.VectorSearch(cctx, m.Namespace, m.Embedding,
-			store.Filter{Tiers: []memory.Tier{memory.TierSemantic, memory.TierProcedural}, Now: s.now()}, 1)
+			store.Filter{Tiers: []memory.Tier{memory.TierSemantic, memory.TierProcedural},
+				ExcludeMetadata: handoffExclusion(), Now: s.now()}, 1)
 		if err != nil {
 			slog.WarnContext(cctx, "corroborate: durable lookup failed",
 				"namespace", m.Namespace, "err", err)
@@ -1980,7 +2038,7 @@ const contradictCooldown = 24 * time.Hour
 // it — off the request path. The write itself is stored unchanged.
 func (s *Service) contradictNearestAsync(ctx context.Context, m *memory.Memory, fresh bool) {
 	if !fresh || m.Tier.Term() != memory.LongTerm ||
-		s.contradictMinScore <= 0 || len(m.Embedding) == 0 {
+		s.contradictMinScore <= 0 || len(m.Embedding) == 0 || isHandoff(m.Tags) {
 		return
 	}
 	s.detach(ctx, similarityJobTimeout, func(cctx context.Context) {
@@ -1989,7 +2047,8 @@ func (s *Service) contradictNearestAsync(ctx context.Context, m *memory.Memory, 
 		// between the write and the stale fact it should invalidate. Scanning
 		// past candidates the detector reads as restatements reaches it.
 		cands, err := s.store.VectorSearch(cctx, m.Namespace, m.Embedding,
-			store.Filter{Tiers: []memory.Tier{memory.TierSemantic, memory.TierProcedural}, Now: s.now()}, 3)
+			store.Filter{Tiers: []memory.Tier{memory.TierSemantic, memory.TierProcedural},
+				ExcludeMetadata: handoffExclusion(), Now: s.now()}, 3)
 		if err != nil {
 			slog.WarnContext(cctx, "contradict: durable lookup failed",
 				"namespace", m.Namespace, "err", err)
@@ -2087,6 +2146,14 @@ type RecallInput struct {
 	// when a caller genuinely needs fresh turns (e.g. a "what did I just say"
 	// debug query).
 	IncludeFreshTurns bool
+	// IncludeHandoffs, when true, lets session handoffs into recall results for
+	// this call. Default (false) excludes them: a handoff is a 100-300 line
+	// prompt that shares lexical and embedding surface with almost every query
+	// about the project, so left in the corpus it would crowd real facts out of
+	// the top-k on unrelated questions. A handoff is reached deliberately — via
+	// the briefing pointer and memory_get — not by recall. Set this only to
+	// search across stored handoffs themselves.
+	IncludeHandoffs bool
 	// QueryRewrite, when true and an LLM answerer is configured, rewrites the
 	// query into 2-3 diverse variants before recall and fuses the results via
 	// RRF. Cheapest read-path LLM lever; opt-in per call. No-op when no answerer
@@ -2299,7 +2366,7 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 		Levels:            in.Levels,
 		Tags:              in.Tags,
 		Metadata:          in.Metadata,
-		ExcludeMetadata:   in.ExcludeMetadata,
+		ExcludeMetadata:   recallExcludeMetadata(in),
 		ExcludeIDs:        in.ExcludeIDs,
 		IncludeExpired:    in.IncludeExpired,
 		IncludeSuperseded: in.IncludeSuperseded,
