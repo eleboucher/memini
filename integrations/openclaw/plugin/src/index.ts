@@ -118,6 +118,7 @@ const typeboxConfigSchema = Type.Object(
     skip_without_agent: Type.Optional(Type.Boolean()),
     skip_system_turns: Type.Optional(Type.Boolean()),
     system_kinds: Type.Optional(Type.Array(Type.String())),
+    capture_skip_patterns: Type.Optional(Type.Array(Type.String())),
     fallback_on_error: Type.Optional(Type.Boolean()),
     timeout_ms: Type.Optional(Type.Number()),
     expose_tools: Type.Optional(Type.Boolean()),
@@ -149,6 +150,12 @@ const DEFAULT_NAMESPACE_TEMPLATE = "{namespace}-{agent}";
 // skip_without_agent doesn't catch them — skip_system_turns does. Matched
 // case-insensitively; override the set via the system_kinds config.
 const DEFAULT_SYSTEM_KINDS = ["heartbeat", "cron"];
+// Case-insensitive substrings that, if present anywhere in a turn (user or
+// assistant text), skip capture entirely. Empty by default; operators add the
+// markers their integrations emit (e.g. structured tool-invocation blocks) so
+// those turns never enter the memory corpus. Generalises NOISE_PREFIXES, which
+// only matches a prefix of the user text.
+const DEFAULT_CAPTURE_SKIP_PATTERNS: string[] = [];
 
 // harnessCwd is the daemon's working directory: this install's stable pin
 // identity. gatewayFacts resolves it into the toplevel_path fact that rides
@@ -304,6 +311,10 @@ export function resolveConfig(
       Array.isArray(c.system_kinds) && c.system_kinds.length
         ? c.system_kinds.map((k: any) => String(k).toLowerCase())
         : DEFAULT_SYSTEM_KINDS,
+    capture_skip_patterns:
+      Array.isArray(c.capture_skip_patterns) && c.capture_skip_patterns.length
+        ? c.capture_skip_patterns.map((p: any) => String(p)).filter((p: string) => p.length > 0)
+        : DEFAULT_CAPTURE_SKIP_PATTERNS,
     fallback_on_error: c.fallback_on_error !== false,
     timeout_ms: Number(c.timeout_ms || process.env.MEMINI_TIMEOUT_MS || DEFAULT_TIMEOUT_MS),
     // On by default. The memory slot's automatic recall/capture cannot express
@@ -596,6 +607,16 @@ const ROLE_LABEL = /^(?:user|assistant|system)\s*:\s*/i;
 export function startsWithNoisePrefix(text: string) {
   const body = text.replace(ROLE_LABEL, "");
   return NOISE_PREFIXES.some((p) => body.startsWith(p));
+}
+
+// Operator-configured substring backstop. Unlike startsWithNoisePrefix (a prefix
+// of the user text), this matches anywhere in the combined turn, case-insensitively,
+// catching structured markers an integration emits mid-content (e.g. a tool block
+// in the assistant's reply). Empty patterns list => no-op.
+export function matchesSkipPattern(text: string, patterns: string[] | undefined) {
+  if (!patterns || !patterns.length) return false;
+  const hay = text.toLowerCase();
+  return patterns.some((p) => p && hay.includes(p.toLowerCase()));
 }
 
 // Mirrors the opencode plugin's labels toggle. Default is plain bullets (no
@@ -2090,6 +2111,9 @@ const plugin: {
       const captureUser = stripRuntimePreambles(stripInjectedContext(userText));
       if (!captureUser || startsWithNoisePrefix(captureUser)) return;
       if (captureUser.length < live.min_capture_chars) return;
+      // Operator noise markers can appear in either side of the turn (e.g. a
+      // tool-invocation block in the assistant reply), so match the combined text.
+      if (matchesSkipPattern(`${captureUser}\n${assistantText}`, live.capture_skip_patterns)) return;
       const ns = effectiveNamespace(live, hookCtx);
       if (ns == null) return;
       // A capture without a session_id can never be excluded by the pre-turn

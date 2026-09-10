@@ -21,6 +21,7 @@ import {
   sessionLive,
   shouldSkipSystemTurn,
   startsWithNoisePrefix,
+  matchesSkipPattern,
   stripRuntimePreambles,
   type ResolvedConfig,
 } from "../src/index.ts";
@@ -238,6 +239,24 @@ test("startsWithNoisePrefix: real production cron turn behind a User: label is n
     "User: [cron:b571428f-243c-4604-919e-effb800d44c0 homelab-peers-commits] " +
     "You are a homelab commit watcher. Check these repos and post to Discord.";
   assert.equal(startsWithNoisePrefix(text), true);
+});
+
+test("matchesSkipPattern: matches a marker mid-content, case-insensitively, on either side of the turn", () => {
+  const patterns = ["type: image generation task"];
+  const turn = "Make me a picture of a cat\nSure — TYPE: Image Generation Task\nnode: ksampler ...";
+  assert.equal(matchesSkipPattern(turn, patterns), true);
+});
+
+test("matchesSkipPattern: empty or undefined patterns is a no-op", () => {
+  assert.equal(matchesSkipPattern("type: image generation task", []), false);
+  assert.equal(matchesSkipPattern("type: image generation task", undefined), false);
+});
+
+test("matchesSkipPattern: a loose topical mention is not skipped without the exact marker", () => {
+  assert.equal(
+    matchesSkipPattern("we talked about image generation yesterday", ["type: image generation task"]),
+    false,
+  );
 });
 
 test("startsWithNoisePrefix: bare and role-labelled markers both match", () => {
