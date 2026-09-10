@@ -14,3 +14,4 @@ allowBuilds:
   protobufjs: true
   tree-sitter-bash: true
   openclaw: true
+  koffi: true
