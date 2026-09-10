@@ -2040,6 +2040,9 @@ export default function meminiExtension(pi: ExtensionAPI): void {
       include_fresh_turns: Type.Optional(Type.Boolean({
         description: "Include just-captured turns normally hidden by the temporal echo guard.",
       })),
+      include_handoffs: Type.Optional(Type.Boolean({
+        description: "also return stored session handoffs (excluded by default — they are long prompts reached through the briefing pointer and memory_get, not through recall); only when searching across handoffs themselves",
+      })),
       query_rewrite: Type.Optional(Type.Boolean({ description: "Rewrite into variants and fuse via RRF." })),
       limit: Type.Optional(Type.Integer({ description: "Max results (default 10)." })),
       scope: Scope,
@@ -2060,7 +2063,7 @@ export default function meminiExtension(pi: ExtensionAPI): void {
       };
       for (const key of [
         "tiers", "levels", "tags", "metadata", "exclude_metadata", "exclude_ids",
-        "min_rank_score", "include_fresh_turns", "query_rewrite", "as_of",
+        "min_rank_score", "include_fresh_turns", "include_handoffs", "query_rewrite", "as_of",
       ]) {
         if (hasOwn(params, key)) body[key] = params[key];
       }

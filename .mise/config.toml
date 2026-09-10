@@ -61,6 +61,69 @@ node --test plugin/scripts/_cursor_test.mjs
 description = "Run integration tests (testcontainers; requires Docker)"
 run = "go test -tags=integration ./... -count=1"
 
+[tasks.test-opencode]
+description = "Run the opencode plugin tests (integrations/opencode/plugin)"
+dir = "integrations/opencode/plugin"
+run = "node --test"
+
+[tasks.test-opencode-v2]
+description = "Check the opencode v2 plugin package stages and loads (CI gate)"
+dir = "integrations/opencode/plugin-v2"
+run = '''
+node ./prepare-package.mjs
+node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  const pkg = JSON.parse(readFileSync("./package.json", "utf8"));
+  const entry = pkg.exports["./server"];
+  if (entry !== pkg.main) throw new Error("./server and main must agree");
+  // dist/package.json shadows the root manifest for everything under
+  // dist/, so it has to restate the module type; node only warns.
+  const staged = JSON.parse(readFileSync("./dist/package.json", "utf8"));
+  if (staged.type !== "module") throw new Error("staged dist/package.json must set type: module");
+  const mod = await import(entry);
+  const plugin = mod.default;
+  if (plugin?.id !== "memini" || typeof plugin.setup !== "function") {
+    throw new Error("v2 package entrypoint is not a { id, setup } plugin");
+  }
+'
+'''
+
+[tasks.test-openclaw]
+description = "Build and test the OpenClaw plugin (integrations/openclaw/plugin)"
+dir = "integrations/openclaw/plugin"
+run = '''
+pnpm install
+pnpm run build
+pnpm run test
+'''
+
+[tasks.test-pi]
+description = "Test the Pi extension against the pinned Pi API (integrations/pi/plugin)"
+dir = "integrations/pi/plugin"
+run = '''
+pnpm install
+pnpm run test
+'''
+
+[tasks.test-hermes]
+description = "Run the Hermes provider tests (integrations/hermes/plugin; stdlib unittest)"
+dir = "integrations/hermes/plugin"
+run = "python3 -m unittest -v"
+
+[tasks.test-webui]
+description = "Run the Open WebUI filter/tool tests (integrations/openwebui; needs pydantic + aiohttp)"
+dir = "integrations/openwebui"
+# CI installs the deps so the suite can't self-skip green. Locally pip may be
+# absent (PEP 668 splits); the import-check still fails loudly when the
+# deps are missing instead of letting the suite slide on 19 empty skips.
+run = '''
+if python3 -m pip --version >/dev/null 2>&1; then
+  python3 -m pip install pydantic aiohttp
+fi
+python3 -c "import pydantic, aiohttp"
+python3 -m unittest -v
+'''
+
 [tasks.build]
 description = "Build the memini binary into ./bin"
 # `ui` builds dist/ (gitignored) so the binary embeds the real bundle.
@@ -119,6 +182,13 @@ mise run build-client
 git diff --exit-code plugin/scripts/_client.gen.mjs
 '''
 
+[tasks.tidy-check]
+description = "Fail if go.mod/go.sum are untidy (CI gate)"
+run = '''
+go mod tidy
+git diff --exit-code go.mod go.sum
+'''
+
 [tasks.rest-check]
 description = "Fail if the generated REST server code is stale (CI gate)"
 run = '''
@@ -141,7 +211,12 @@ dir = "ui"
 run = '''
 mise run gen-api
 git diff --exit-code src/settings-catalog.gen.ts src/api-schema.gen.ts
+pnpm run typecheck
 '''
+
+[tasks.test-race]
+description = "Run the unit tests with the race detector enabled (CI gate)"
+run = "CGO_ENABLED=1 go test -race -count=1 -timeout 300s ./..."
 
 [tasks.test-client]
 description = "Run the shared client core tests (packages/memini-client)"
@@ -162,8 +237,27 @@ git diff --exit-code docs/reference/
 '''
 
 [tasks.helm-lint]
-description = "Lint the Helm chart"
-run = "helm lint charts/memini"
+description = "Lint all charts with helm (same gate as CI)"
+run = '''
+set -euo pipefail
+for chart in charts/*/; do
+  helm lint "$chart"
+done
+'''
+
+[tasks.helm-deps-check]
+description = "Fail if Chart.lock is out of sync with Chart.yaml for any vendored chart (CI gate)"
+run = '''
+set -euo pipefail
+for chart in charts/*/; do
+  [ -f "${chart}Chart.lock" ] || continue
+  helm dependency list "$chart" | awk 'NR>1 && NF && $NF!="ok" { bad=1 } END { exit bad+0 }' || {
+    echo "Chart.lock is out of sync with Chart.yaml in ${chart} — re-vendor the dependency"
+    helm dependency list "$chart"
+    exit 1
+  }
+done
+'''
 
 [tasks.helm-docs]
 description = "Regenerate the chart README + values.schema.json"
