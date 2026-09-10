@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  agentPolicy,
   applyTemplate,
   approxTokens,
   createPlaintextBearerAuthGuard,
@@ -195,6 +196,64 @@ test("shouldSkipSystemTurn: gates only when both flags are on", () => {
   assert.equal(shouldSkipSystemTurn(baseCfg({ skip_system_turns: false }), { trigger: "heartbeat" }), false);
   assert.equal(shouldSkipSystemTurn(baseCfg({ skip_system_turns: true }), { trigger: "user" }), false);
   assert.equal(shouldSkipSystemTurn(baseCfg({ skip_system_turns: true }), { trigger: "heartbeat" }), true);
+});
+
+// --- per-agent capture/recall overrides (config `agents`) ---------------------
+
+test("resolveConfig: agents defaults to empty; rows normalize to capture/recall booleans", () => {
+  assert.deepEqual(resolveConfig({}).agents, {});
+  assert.deepEqual(resolveConfig({ agents: undefined }).agents, {});
+  // A non-object (even an array) is not a map — treated as unset.
+  assert.deepEqual(resolveConfig({ agents: "oops" }).agents, {});
+  assert.deepEqual(resolveConfig({ agents: [{ id: "x" }] }).agents, {});
+
+  const cfg = resolveConfig({
+    agents: {
+      utils: { capture: false, recall: false },
+      // Unset flags stay unset — agentPolicy applies the defaults.
+      "recall-only": { capture: false },
+      tuned: { recall: true },
+      // Numeric keys arrive as strings, and keys are trimmed.
+      "  trimmed ": { recall: false },
+    },
+  });
+  assert.deepEqual(cfg.agents["utils"], { capture: false, recall: false });
+  assert.deepEqual(cfg.agents["recall-only"], { capture: false });
+  assert.deepEqual(cfg.agents["tuned"], { recall: true });
+  assert.deepEqual(cfg.agents["trimmed"], { recall: false });
+});
+
+test("resolveConfig: agents drops malformed rows instead of coercing them", () => {
+  const cfg = resolveConfig({
+    agents: {
+      notAnObject: "off",
+      // A non-boolean flag is not a policy value — dropped, default stays on.
+      stringFalse: { capture: "false" },
+    },
+  });
+  assert.deepEqual(Object.keys(cfg.agents).sort(), ["stringFalse"]);
+  assert.deepEqual(agentPolicy(cfg, { agentId: "stringFalse" }), { capture: true, recall: true });
+});
+
+test("agentPolicy: unlisted agents and agentless turns keep the full automatic memory", () => {
+  const cfg = baseCfg({ agents: { utils: { capture: false, recall: false } } });
+  assert.deepEqual(agentPolicy(cfg, { agentId: "someone-else" }), { capture: true, recall: true });
+  assert.deepEqual(agentPolicy(cfg, {}), { capture: true, recall: true });
+  // Config shapes without an `agents` key at all.
+  assert.deepEqual(agentPolicy(baseCfg(), { agentId: "utils" }), { capture: true, recall: true });
+});
+
+test("agentPolicy: resolves the turn's agent id the same way namespaces do", () => {
+  const cfg = baseCfg({
+    agents: { utils: { capture: false, recall: false }, ghost: { capture: false } },
+  });
+  // ctx.agentId wins; the sessionKey agent segment is the fallback.
+  assert.deepEqual(agentPolicy(cfg, { agentId: "utils" }), { capture: false, recall: false });
+  assert.deepEqual(agentPolicy(cfg, { sessionKey: "agent:utils:main" }), { capture: false, recall: false });
+  // Partial rows are recall-only: capture off, recall on.
+  assert.deepEqual(agentPolicy(cfg, { agentId: "ghost" }), { capture: false, recall: true });
+  // Keys match verbatim (case-sensitive, unsanitized).
+  assert.deepEqual(agentPolicy(cfg, { agentId: "GHOST" }), { capture: true, recall: true });
 });
 
 test("sessionIdentity: prefers sessionId over sessionKey/runId", () => {

@@ -119,6 +119,22 @@ const typeboxConfigSchema = Type.Object(
     skip_system_turns: Type.Optional(Type.Boolean()),
     system_kinds: Type.Optional(Type.Array(Type.String())),
     capture_skip_patterns: Type.Optional(Type.Array(Type.String())),
+    // Per-agent capture/recall opt-OUT, keyed by the OpenClaw agent id
+    // ("utils": { "capture": false }) — missing flags default to on, so
+    // utility bots can drop turn capture (or recall) without tightening the
+    // global knobs the persona agents depend on.
+    agents: Type.Optional(
+      Type.Record(
+        Type.String(),
+        Type.Object(
+          {
+            capture: Type.Optional(Type.Boolean()),
+            recall: Type.Optional(Type.Boolean()),
+          },
+          { additionalProperties: false },
+        ),
+      ),
+    ),
     fallback_on_error: Type.Optional(Type.Boolean()),
     timeout_ms: Type.Optional(Type.Number()),
     expose_tools: Type.Optional(Type.Boolean()),
@@ -315,6 +331,9 @@ export function resolveConfig(
       Array.isArray(c.capture_skip_patterns) && c.capture_skip_patterns.length
         ? c.capture_skip_patterns.map((p: any) => String(p)).filter((p: string) => p.length > 0)
         : DEFAULT_CAPTURE_SKIP_PATTERNS,
+    // Per-agent capture/recall overrides. Plugin-config-only layer: no env
+    // var, no server setting — only this plugin knows the agent ids.
+    agents: normalizeAgentOverrides(c.agents),
     fallback_on_error: c.fallback_on_error !== false,
     timeout_ms: Number(c.timeout_ms || process.env.MEMINI_TIMEOUT_MS || DEFAULT_TIMEOUT_MS),
     // On by default. The memory slot's automatic recall/capture cannot express
@@ -485,6 +504,46 @@ function agentIdentity(ctx: any) {
   const id = ctx?.agentId;
   if (typeof id === "string" && id.trim()) return id.trim();
   return parseAgentFromSessionKey(ctx?.sessionKey);
+}
+
+// The `agents` config row for one agent id. Unset flags mean on — agentPolicy
+// applies the defaults; everything upstream keeps the operator's shape.
+export interface AgentPolicy {
+  capture?: boolean;
+  recall?: boolean;
+}
+
+// normalizeAgentOverrides compiles config `agents` into the lookup table the
+// hook handlers read. Malformed rows (and non-boolean flags, which the config
+// schema rejects anyway) are dropped, not coerced — a truthy non-boolean must
+// not silently read as an opt-out it never was. Keys match agentIdentity's
+// output verbatim (trimmed, case-sensitive, not namespace-sanitized).
+function normalizeAgentOverrides(raw: any): Record<string, AgentPolicy> {
+  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, AgentPolicy> = {};
+  for (const [rawId, rawPolicy] of Object.entries(raw)) {
+    const id = String(rawId).trim();
+    if (!id || !rawPolicy || typeof rawPolicy !== "object" || Array.isArray(rawPolicy)) continue;
+    const p = rawPolicy as any;
+    const policy: AgentPolicy = {};
+    if (typeof p.capture === "boolean") policy.capture = p.capture;
+    if (typeof p.recall === "boolean") policy.recall = p.recall;
+    out[id] = policy;
+  }
+  return out;
+}
+
+// agentPolicy resolves the `agents` row for this turn's agent id, with unset
+// flags defaulting on. Unlisted agents — and turns with no agent id at all —
+// keep full automatic memory. Covers the AUTOMATIC slot behavior only: the
+// explicit memory_* tools are deliberate model actions and follow expose_tools.
+export function agentPolicy(cfg: ResolvedConfig, ctx: any): { capture: boolean; recall: boolean } {
+  const id = agentIdentity(ctx);
+  const row = id ? cfg.agents?.[id] : undefined;
+  return {
+    capture: row?.capture !== false,
+    recall: row?.recall !== false,
+  };
 }
 
 // effectiveNamespace returns the configured namespace, or a per-agent namespace
@@ -2006,6 +2065,8 @@ const plugin: {
       const prompt = typeof event?.prompt === "string" ? stripInjectedContext(event.prompt).trim() : "";
       if (!prompt) return;
       if (shouldSkipSystemTurn(live, hookCtx)) return;
+      // Per-agent recall override; the explicit tools are unaffected.
+      if (!agentPolicy(live, hookCtx).recall) return;
       const ns = effectiveNamespace(live, hookCtx);
       if (ns == null) return;
       const body: any = { query: prompt, limit: live.recall_limit };
@@ -2106,6 +2167,9 @@ const plugin: {
       // Bumped before the capture-quality gates below — a turn too short or
       // too noisy to capture is still a turn the conversation moved through.
       bumpPromptCounter(session);
+      // Per-agent capture override, after the bump: a capture-off agent that
+      // still recalls needs its turns counted for the cooldown prompt window.
+      if (!agentPolicy(live, hookCtx).capture) return;
       // Drop OpenClaw runtime plumbing from the captured turn: untrusted-metadata
       // preambles, and subagent task delegations (framing, not conversation).
       const captureUser = stripRuntimePreambles(stripInjectedContext(userText));

@@ -220,6 +220,40 @@ To share **one** memory across all agents (the previous default), set
 `"namespace_per_agent": false`. If you previously ran with shared memory and want
 to separate already-pooled agents, see `memini namespace split` below.
 
+### Per-agent capture/recall (`agents`)
+
+The slot's automatic capture and recall run for every agent on the gateway, and
+the tuning knobs (`min_capture_chars`, `recall_limit`, `inject_cooldown_*`, …)
+are global — silencing a lightweight utility bot whose turns are trivial
+("thanks!" → "you're welcome") would also degrade persona agents whose
+turn-fed memory is healthy. The `agents` map opts individual agents out,
+keyed by the agent id OpenClaw resolves (the `agentId` on hook contexts, or
+the agent segment of the session key):
+
+```json
+"config": {
+  "namespace_per_agent": true,
+  "agents": {
+    "utils":    { "capture": false, "recall": false },
+    "digest":   { "capture": false }
+  }
+}
+```
+
+- `capture: false` — `agent_end` stops capturing that agent's turns. With
+  `recall` left on the agent is **recall-only**: it still gets automatic
+  injection, and its memories accumulate only from its own explicit
+  `memory_remember` calls.
+- `recall: false` — no automatic injection for that agent, and no search
+  request at all. The **explicit tools are unaffected**: `memory_recall` /
+  `memory_remember` still work, because they are deliberate model actions —
+  `expose_tools` is the lever that hides those.
+
+Matching is per agent id, verbatim and case-sensitive; unset flags default to
+on, unlisted agents keep full behavior. A capture-off agent that still recalls
+keeps its completed turns counted for the `inject_cooldown_prompts` window, so
+its repeat-injection cooldown stays correct.
+
 ### Explicit tools (`expose_tools`)
 
 **On by default as of 0.6.9** (it was opt-in before). The plugin fills the memory

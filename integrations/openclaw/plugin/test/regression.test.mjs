@@ -1491,6 +1491,129 @@ test("the echo guard is scoped per namespace — another agent's captures don't 
   }
 });
 
+// --- per-agent policy (config `agents`) --------------------------------------
+
+test("agents capture:false skips capture for that agent only", async () => {
+  const hooks = {};
+  const requests = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = withHandshakeFailure(async (url, init) => {
+    requests.push({ url: String(url), init });
+    return { ok: true, async json() { return { id: "m1" }; }, async text() { return ""; } };
+  });
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false, agents: { utils: { capture: false } } },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    const turn = (q, a) => ({ success: true, messages: [{ role: "user", content: q }, { role: "assistant", content: a }] });
+    await hooks.agent_end(turn("thanks!", "you're welcome"), { sessionId: "sess-utils", agentId: "utils" });
+    assert.equal(
+      requests.find((r) => r.url.endsWith("/v1/memories")),
+      undefined,
+      "a capture:false agent must not write a turn",
+    );
+    await hooks.agent_end(turn("q2", "a2"), { sessionId: "sess-persona", agentId: "persona" });
+    assert.ok(requests.find((r) => r.url.endsWith("/v1/memories")), "unlisted agents still capture");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("agents recall:false skips recall injection for that agent only", async () => {
+  const hooks = {};
+  const requests = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = withHandshakeFailure(async (url, init) => {
+    requests.push({ url: String(url), init });
+    return {
+      ok: true,
+      async json() {
+        return String(url).endsWith("/v1/search")
+          ? { results: [{ memory: { summary: "prior fact", tier: "semantic" }, score: 0.9 }] }
+          : { id: "m1" };
+      },
+      async text() { return ""; },
+    };
+  });
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false, agents: { utils: { recall: false } } },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    const utils = await hooks.before_prompt_build({ prompt: "q" }, { agentId: "utils" });
+    assert.equal(utils, undefined, "a recall:false agent gets no injection");
+    assert.equal(
+      requests.find((r) => r.url.endsWith("/v1/search")),
+      undefined,
+      "no search request is made at all",
+    );
+    const persona = await hooks.before_prompt_build({ prompt: "q" }, { agentId: "persona" });
+    assert.match(persona.prependContext, /prior fact/, "unlisted agents still recall");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// A recall-only agent (capture off) must keep its completed turns counted:
+// the injected-id cooldown's prompt dimension advances on agent_end, whatever
+// the capture policy says.
+test("agents capture:false turns still advance the cooldown prompt window", async () => {
+  process.env.MEMINI_INJECT_COOLDOWN_MS = "0";
+  process.env.MEMINI_INJECT_COOLDOWN_PROMPTS = "2";
+  const hooks = {};
+  const searches = [];
+  let writes = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = withHandshakeFailure(async (url) => {
+    if (String(url).endsWith("/v1/memories")) writes++;
+    return {
+      ok: true,
+      async json() {
+        return String(url).endsWith("/v1/search")
+          ? { results: [{ memory: { id: "m1", summary: "alpha", tier: "semantic" }, score: 0.9 }] }
+          : { id: "cap-x" };
+      },
+      async text() { return ""; },
+    };
+  });
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false, agents: { utils: { capture: false } } },
+      registerMemoryCapability() {}, registerHook() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+      registerTool() {},
+    });
+    const ctx = { sessionId: "sess-utils", agentId: "utils" };
+    const endTurn = () =>
+      hooks.agent_end(
+        { success: true, messages: [{ role: "user", content: "q" }, { role: "assistant", content: "a" }] },
+        ctx,
+      );
+    await endTurn(); // counter 1; capture skipped
+    const first = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.match(first.prependContext, /alpha/);
+    // Two more completed turns (counter 3): no captures written, yet the
+    // prompt window (2 turns) lapses and the id re-serves.
+    await endTurn();
+    await endTurn();
+    const after = await hooks.before_prompt_build({ prompt: "q" }, ctx);
+    assert.ok(after, "capture-off turns must still advance the prompt window");
+    assert.equal(writes, 0, "capture:false still means zero captures");
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.MEMINI_INJECT_COOLDOWN_MS;
+    delete process.env.MEMINI_INJECT_COOLDOWN_PROMPTS;
+  }
+});
+
 test("meminiListPath builds repeatable tier/tag and escaped meta params", () => {
   assert.equal(
     meminiListPath({ tiers: ["procedural"], tags: ["auth"], metadata: { category: "bug_fixes" }, limit: 20 }),
