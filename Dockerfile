@@ -30,9 +30,13 @@ ARG VERSION=dev
 ARG REVISION=none
 ARG DATE=unknown
 
+# -p 1 caps Go compile parallelism: concurrent package compiles stack up
+# gigabytes of RSS, which OOM-killed the memory-tight CI runner while
+# cross-compiling the large anthropic-sdk-go dependency.
 RUN --mount=type=cache,target=/go/pkg/mod \
   --mount=type=cache,target=/root/.cache/go-build,id=gobuild-${TARGETARCH} \
   CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
+  -p 1 \
   -ldflags "-s -w \
   -X github.com/eleboucher/memini/internal/version.Version=${VERSION} \
   -X github.com/eleboucher/memini/internal/version.Commit=${REVISION} \

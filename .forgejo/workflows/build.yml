@@ -39,15 +39,43 @@ jobs:
             org.opencontainers.image.documentation=https://git.erwanleboucher.dev/eleboucher/memini/src/branch/main/README.md
             org.opencontainers.image.authors=Erwan Leboucher <erwanleboucher@gmail.com>
             org.opencontainers.image.vendor=Erwan Leboucher
-      - name: Build and push
+      # One platform at a time: with both Go cross-compiles running in
+      # parallel, the multiarch runner ran out of memory compiling the large
+      # anthropic-sdk-go dependency («compile: signal: terminated»). Build
+      # each platform, push by digest, then assemble the manifest list.
+      - name: Build and push (amd64)
+        id: build-amd64
         uses: https://data.forgejo.org/docker/build-push-action@v7
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          platforms: linux/amd64
           labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=git.erwanleboucher.dev/${{ vars.USERNAME }}/memini,push-by-digest=true,name-canonical=true,push=true
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
             REVISION=${{ github.sha }}
             DATE=${{ steps.build-meta.outputs.created }}
+      - name: Build and push (arm64)
+        id: build-arm64
+        uses: https://data.forgejo.org/docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/arm64
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=git.erwanleboucher.dev/${{ vars.USERNAME }}/memini,push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            REVISION=${{ github.sha }}
+            DATE=${{ steps.build-meta.outputs.created }}
+      - name: Create and push manifest list
+        env:
+          IMAGE: git.erwanleboucher.dev/${{ vars.USERNAME }}/memini
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -eu
+          cmd=(docker buildx imagetools create)
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && cmd+=(-t "$tag")
+          done <<< "$TAGS"
+          cmd+=("$IMAGE@${{ steps.build-amd64.outputs.digest }}" "$IMAGE@${{ steps.build-arm64.outputs.digest }}")
+          "${cmd[@]}"
