@@ -130,9 +130,10 @@ temporary big hammer.
 
 Recall shaping (both optional, matching the opencode/Claude Code plugins):
 `recall_limit` (max memories per turn, default **3**) and `recall_max_tokens`
-(hard token ceiling on the recall block, default **0** = uncapped, matching the
-other integrations; set it `> 0` to cap a raised `recall_limit`, the tail is
-dropped with a truncation footer). `recall_max_tokens` also reads
+(hard token ceiling on the recall block, default **250** — an explicit `0` is
+treated as unset and falls back to that shared default, so the cap cannot be
+disabled from config; set a higher value to fit a raised `recall_limit`, the
+tail is dropped with a truncation footer). `recall_max_tokens` also reads
 `MEMINI_INJECT_RECALL_MAX_TOK`, and `MEMINI_INJECT_LABELS` (`tier`, `confidence`,
 `age`) toggles the per-bullet tag prefix.
 
@@ -174,23 +175,38 @@ user turn — these match anywhere, so they catch structured markers an integrat
 mid-reply (e.g. a tool-invocation block like `type: image generation task`) that would
 otherwise be captured verbatim as a durable "fact".
 
-**There is no relevance-score floor knob — by design.** Bounding per-turn volume
-is `recall_limit`'s job, not a score gate, because benchmarking
-(`cmd/bench -vec-gate`) showed neither score can decide "inject nothing when
-nothing is relevant" with the default MiniLM embedder:
+**Relevance is floored server-side, not here.** Recall requests carry
+`min_rank_score`, which floors the final composite score — the value the
+response `score` field and the activity feed show — after re-ranking.
+`recall_min_score` (config; also `MEMINI_INJECT_RECALL_MIN_SCORE`, and the
+same-named server settings key) defaults to **0.5**; `0` disables it. The
+server enforces the floor, floored hits stay visible in the activity feed
+marked as filtered, and a server too old for `min_rank_score` pays one
+400-retry before the client applies the same cut locally — as do values ≥ 1,
+which sit outside the server's valid `[0,1)`.
+>>>>>>> eaccee5 (docs: correct relevance-floor and recall-cap documentation)
 
-- The **fused score** is min-max-normalised within the candidate pool
-  (`internal/search/fusion.go`), so the pool's best always lands near ~1.0
-  regardless of absolute relevance — a nonsense query produces the same
-  high-scoring shape as a perfect match.
-- The **raw vector score** doesn't separate either: across 240 LongMemEval
-  queries the top score for a relevant namespace (median 0.469) overlaps the
-  top score for a foreign one (median 0.448). Any floor that suppresses the
-  irrelevant case also guts real recall (at 0.46, recall drops 98%→61%).
+Treat `0.5` as a serve-guard, not a relevance verdict. It is calibrated
+against near-zero-signal queries landing in the low composite range, not
+against any model's score distribution — and the composite scale is
+backend-relative. With a cross-encoder reranker the composite rides that
+model's scale: a saturating reranker (jina-reranker-v2 class) puts essentially
+every candidate above 0.5, and a cut that bites sits far higher (measured on
+one such backend: 20/20 candidates clear 0.5, none clear 0.95). Sample the
+scale before raising it — the response `score` field and the feed's floored
+entries are exactly what the server compares — and note that precision
+gating on a reranked backend belongs to the server's `MEMINI_RERANK_MIN_SCORE`
+(see the tuning-recall guide for the bench sweep), not this knob.
 
-A genuine relevance gate would need a model whose absolute scores separate (a
-stronger embedder, or a cross-encoder reranker, which emits calibrated scores) —
-not a threshold on the current pipeline. Until then, `recall_limit` is the lever.
+Why the default is not a calibrated quality bar: with the default MiniLM
+embedder, neither score separates relevance (`cmd/bench -vec-gate`): the
+**fused score** is min-max-normalised within its candidate pool
+(`internal/search/fusion.go`), so the pool's best lands ~1.0 regardless of
+absolute relevance, and the **raw vector score** doesn't separate either —
+across 240 LongMemEval queries the top score for a relevant namespace (median
+0.469) overlaps the top for a foreign one (median 0.448), so any floor tuned
+to suppress the irrelevant case guts real recall (at 0.46, recall drops
+98%→61%). Bounding per-turn volume stays `recall_limit`'s job.
 
 Memory is isolated **per agent by default** (`namespace_per_agent: true`): each
 agent reads and writes its own scope, resolved from the agent id on each hook

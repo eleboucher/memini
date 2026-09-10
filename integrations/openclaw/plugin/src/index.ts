@@ -356,7 +356,7 @@ export function resolveConfig(
     recall_position: c.recall_position === "append" ? "append" : "prepend",
     // inject_recall_min_score floors the FINAL composite score. Resolves like
     // recall_limit: config wins outright when explicitly set, else env-override >
-    // (later) server > built-in default (0 / no floor).
+    // (later) server > built-in default (0.5, the shared serve-guard default).
     recall_min_score: recallMinScoreExplicit
       ? c.recall_min_score
       : effectiveSetting<number>(knob("inject_recall_min_score"), undefined, env).value,

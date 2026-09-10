@@ -175,12 +175,18 @@ REST upsert replaces the record with what you send).
 
 Two host-specific differences remain by design:
 
-- **Relevance floor (`MEMINI_INJECT_RECALL_MIN_SCORE`)** is honored by
-  opencode, Pi, and Hermes but not OpenClaw/Open WebUI. It defaults to `0`
-  (off) everywhere, so default behavior is identical; benchmarking found
-  no score floor reliably separates signal from noise with the default
-  embedder (use `recall_limit` to bound volume instead), which is why
-  OpenClaw omits the knob entirely.
+- **Relevance floor (`MEMINI_INJECT_RECALL_MIN_SCORE`)** is honored by every
+  auto-recalling integration — opencode, Pi, OpenClaw, Hermes, and the Claude
+  Code / Codex hooks — as the server-enforced `min_rank_score` composite
+  floor, defaulting to `0.5` (the server's own default; opencode and Hermes
+  fall back to `0` only until the handshake delivers it). Open WebUI is the
+  exception: no handshake, no floor. Floored hits stay visible in the
+  activity feed, marked as filtered, so the cut is auditable rather than a
+  silent client-side drop on older integrations. `0.5` is a serve-guard
+  against near-zero-signal queries, not a quality gate — no absolute floor
+  reliably separates relevance with the default embedder (use `recall_limit`
+  to bound volume), and on reranked backends a cutting floor sits far higher:
+  sample the response `score` field before raising it.
 - **Shared-namespace echo:** the echo-exclusion is keyed on each host's
   native conversation id (`session_id`, or `chat_id` on Open WebUI). If
   you point two _different_ integrations at the **same** namespace, one

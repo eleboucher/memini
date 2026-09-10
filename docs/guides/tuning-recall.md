@@ -180,9 +180,9 @@ miscalibrated threshold silently empties recall — the default is `0` (off) for
 exactly that reason. The response `score` field is unaffected: it still
 carries the composite ranked score, never the rerank score.
 
-### The three relevance floors
+### The four relevance floors
 
-Recall has three score scales, and each has its own floor — do not confuse them:
+Recall has four score scales, each with its own floor — do not confuse them:
 
 - **Fused retrieval score** (vector + keyword, min-max-normalized): floored by
   [`MEMINI_RECALL_MIN_SCORE`](../reference/configuration.md#memini_recall_min_score)
@@ -210,6 +210,20 @@ Recall has three score scales, and each has its own floor — do not confuse the
   range is `[0,1)` — `1.0` would gate out even a perfect match and is rejected.
   Reach for it only when a client needs a stricter response-side cut than the
   server's baked floors already give; the two floors above usually suffice.
+  Most operators never meet it bare-handed: every bundled auto-recalling
+  integration already rides this floor server-side via
+  `inject_recall_min_score` (env `MEMINI_INJECT_RECALL_MIN_SCORE`, server
+  settings key of the same name), defaulting to **0.5** — the same value as
+  the server's `ClientSettings` default, so client and server agree by
+  default. That default is a serve-guard against near-zero-signal queries,
+  not a calibrated quality gate, and the composite scale is backend-relative:
+  on a reranked store the composite scale rides the reranker's range, where a
+  saturating cross-encoder (jina-reranker-v2 class) puts essentially every
+  candidate above 0.5 — measured on one such backend, 20/20 candidates
+  cleared a 0.5 floor and none cleared 0.95. The response `score` field and
+  the feed's floored entries show this exact scale, so sample your own
+  traffic before choosing a number; on a reranked backend the precision gate
+  is `MEMINI_RERANK_MIN_SCORE` above, not this floor.
 
 ---
 
