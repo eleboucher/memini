@@ -24,7 +24,12 @@ function baseEnv() {
   const env = { ...process.env };
   for (const k of Object.keys(env)) if (k.startsWith("MEMINI_") || k.startsWith("CURSOR_")) delete env[k];
   env.MEMINI_API_KEY = "super-secret-test-token";
-  env.MEMINI_TIMEOUT_MS = "50";
+  // 2000 ms, not a knife-edge: on a loaded CI runner the mock-backed recall
+  // round-trip can hiccup past a tiny budget, and the hook then fails open
+  // (exit 0, EMPTY stdout — correct production behavior) which the recall
+  // assertions misread as "no injection". Dead-URL tests below fail instantly
+  // (ECONNREFUSED) either way, so nothing here depends on a tight timeout.
+  env.MEMINI_TIMEOUT_MS = "2000";
   return env;
 }
 
