@@ -49,6 +49,14 @@ run = "go test ./... -coverprofile cover.out"
 description = "Run Node hook script tests (plugin/scripts/_test.mjs)"
 run = "node --test plugin/scripts/_test.mjs"
 
+[tasks.test-plugin]
+description = "Run all host plugin suites (Claude Code, Codex, Cursor)"
+run = '''
+node --test plugin/scripts/_test.mjs
+node --test plugin/scripts/_codex_test.mjs
+node --test plugin/scripts/_cursor_test.mjs
+'''
+
 [tasks.test-integration]
 description = "Run integration tests (testcontainers; requires Docker)"
 run = "go test -tags=integration ./... -count=1"

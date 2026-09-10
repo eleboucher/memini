@@ -36,6 +36,14 @@ run = "mise run docs-check"
 glob = ["packages/memini-client/src/**/*.ts", "packages/memini-client/scripts/bundle.mjs"]
 run = "mise run client-check"
 
+[pre-commit.commands.helm-docs]
+# Chart values edits must keep README.md/values.schema.json in sync — the
+# same regen-then-diff pattern as the gen gates above, and the same gate the
+# Forgejo helm job enforces on the bot's chart bump commits.
+glob = ["charts/*/values.yaml", "charts/*/Chart.yaml"]
+run = "mise run helm-docs-check"
+stage_fixed = true
+
 [pre-commit.commands.gen-api]
 glob = ["api/openapi.yaml", "ui/scripts/gen-catalog.mjs"]
 run = "mise run gen-api-check"

@@ -141,7 +141,7 @@ jobs:
 
       # Claude Code / Codex hook scripts (pure node, no deps).
       - name: Test Claude Code + Codex plugin scripts
-        run: node --test plugin/scripts/_test.mjs
+        run: node --test plugin/scripts/_test.mjs plugin/scripts/_codex_test.mjs
 
       # Cursor host wiring: envelopes, payload mapping, manifests (pure node).
       - name: Test Cursor plugin scripts
