@@ -115,9 +115,9 @@ test("each host loads only its own hooks file", () => {
   assert.equal(codex.hooks, "./hooks/hooks.codex.json");
 });
 
-test("all nine skills are installed with required safety invariants", () => {
+test("all ten skills are installed with required safety invariants", () => {
   const dirs = fs.readdirSync(path.join(root, "skills")).sort();
-  assert.deepEqual(dirs, ["backfill", "doctor", "forget", "namespace", "pin", "recall", "recap", "remember", "status"]);
+  assert.deepEqual(dirs, ["backfill", "doctor", "forget", "handoff", "namespace", "pin", "recall", "recap", "remember", "status"]);
   assert.match(fs.readFileSync(path.join(root, "skills", "forget", "SKILL.md"), "utf8"), /explicit user\s+confirmation/i);
   assert.match(fs.readFileSync(path.join(root, "skills", "pin", "SKILL.md"), "utf8"), /existing tags plus/);
   for (const name of ["doctor", "backfill"])
