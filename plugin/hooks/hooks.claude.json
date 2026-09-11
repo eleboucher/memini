@@ -1,5 +1,4 @@
 {
-  "//": "Claude Code lifecycle wiring. Business logic is shared with Codex in ../scripts; keep Claude-only SessionEnd and transcript behavior here.",
   "hooks": {
     "SessionStart": [
       {

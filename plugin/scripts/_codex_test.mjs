@@ -82,13 +82,16 @@ test("Codex wiring is documented-event-only and Claude retains SessionEnd", () =
   assert.match(JSON.stringify(codex), /PLUGIN_ROOT/);
 });
 
-test("Codex hooks file carries only the two keys HooksFile accepts", () => {
+test("neither hooks file carries a comment key", () => {
   // codex-rs/config/src/hook_config.rs marks HooksFile #[serde(deny_unknown_fields)],
   // so a "//" comment key aborts the whole file with "unknown field //, expected
-  // description or hooks". Claude Code tolerates unknown keys; Codex does not.
+  // description or hooks"; Claude Code keeps loading the file but warns
+  // `hooks.json: unknown key "//" ignored` on every session.
   const codex = JSON.parse(fs.readFileSync(path.join(root, "hooks", "hooks.codex.json")));
   for (const key of Object.keys(codex))
     assert.ok(key === "description" || key === "hooks", `unknown top-level key ${key}`);
+  const claude = JSON.parse(fs.readFileSync(path.join(root, "hooks", "hooks.claude.json")));
+  assert.deepEqual(Object.keys(claude), ["hooks"]);
 });
 
 test("every Codex handler has a Windows command that bypasses run.sh", () => {
