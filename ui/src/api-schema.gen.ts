@@ -720,6 +720,11 @@ export interface components {
         };
         SearchRequest: {
             query: string;
+            /**
+             * @description Whether returned memories count as used. Set false for automatic context injection: results are still logged, but access counts, access timestamps, confidence, and expiry are unchanged. Omitted or true preserves reinforcement for explicit recalls.
+             * @default true
+             */
+            reinforce: boolean;
             /** @description Why this recall ran — which integration or code path asked for it. Recorded verbatim on the activity event (the "why" the feed shows). Documented vocabulary: "pretool", "session_start", "mcp", "ui", "api", "answer", "doctor". NOT enum-validated server-side, so an unknown value from a fail-soft client is logged rather than rejected. Absent defaults to "api". */
             source?: string;
             tiers?: components["schemas"]["Tier"][];

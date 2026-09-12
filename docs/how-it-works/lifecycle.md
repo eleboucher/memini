@@ -4,7 +4,7 @@ What happens to a memory _after_ [the write path](./write-path.md) commits it. N
 
 The short version:
 
-- Every recall reinforces its results: access counts climb and short-term expiries slide forward. Session briefings deliberately never reinforce.
+- Explicit recall reinforces its results: access counts climb and short-term expiries slide forward. Session briefings and searches with `reinforce: false` do not reinforce.
 - Usage moves memories up the [tier](../tiers.md) ladder; a daily promoter distills what keeps getting recalled into durable facts.
 - An hourly sweeper purges the expired, caps the short-term pool, and demotes durable debris that never earned its keep.
 - Durable facts carry a confidence that grows on corroboration and decays with silence — and a validity window, so a superseded fact leaves live recall while staying reachable through time travel.
@@ -13,7 +13,7 @@ The short version:
 
 When a recall returns a memory, that memory was _used_, and memini records it in the background: `access_count` is bumped, `last_accessed_at` is set, and — for memories that expire — the expiry slides forward by the memory's own lifetime (the caller's custom TTL if one was set at write time, else the tier default: 72h for `working`, 30 days for `episodic`). A `working` note recalled every two days effectively never expires; one nobody asks about is gone in three. Durable memories never gain a TTL from reinforcement — sliding only ever applies to rows that already expire.
 
-**Briefings never reinforce.** A session briefing fires on every session start over the same top-ranked set regardless of what the session is about. Counting that as "used" would inflate `access_count` uniformly across the board and distort every decision that reads it — promotion eligibility, retention scoring, ranking. So a briefing logs what it served but bumps no counters; only genuine, query-driven recall (and the per-prompt injection built on it — see [recall](./recall.md)) earns reinforcement.
+**Briefings never reinforce.** A session briefing fires on every session start over the same top-ranked set regardless of what the session is about. Counting that as "used" would inflate `access_count` uniformly across the board and distort every decision that reads it — promotion eligibility, retention scoring, ranking. So a briefing logs what it served but bumps no counters; explicit recall earns reinforcement. Automatic injection can request `reinforce: false` to return and log results without changing retention. The OpenClaw hook does this so repeated injection cannot make a low-value fact permanently ineligible for demotion.
 
 ## Moving up: intake to durable
 

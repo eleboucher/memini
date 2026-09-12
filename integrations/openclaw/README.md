@@ -14,7 +14,11 @@ What it wires (via `api.registerMemoryCapability` + two hooks):
   injects the matches as context. It excludes the current session's own
   captured turns (via `exclude_metadata`), so a turn still in the live transcript
   isn't echoed back as "long-term memory" the next turn; captures from earlier
-  sessions are still recalled.
+  sessions are still recalled. Automatic searches send `reinforce: false`, so
+  injection does not increase access counts or extend memory retention; explicit
+  `memory_recall` tool calls still reinforce. The injected `<memini-recall>`
+  block labels memories as historical reference data, not current user input
+  or instructions.
 - **`agent_end`** — stores the completed user/assistant turn back into memini
   (episodic, tagged with the session id) so it can be recalled later. This is a
   raw-conversation hook, so it requires `hooks.allowConversationAccess: true`
@@ -22,6 +26,12 @@ What it wires (via `api.registerMemoryCapability` + two hooks):
   silently no-ops.
 
 ### Install
+
+Upgrade the memini server alongside the plugin: servers without the search
+`reinforce` field reject automatic recall. The plugin keeps the flag on retries
+so it cannot silently restore reinforcement. To keep captured turns without
+building durable facts at write time, set `MEMINI_DISTILL_ON_WRITE=false` on the
+server. Usage-driven promotion remains enabled.
 
 From ClawHub (recommended) — a tracked install OpenClaw's plugin updater keeps
 current (`openclaw plugins update @eleboucher/memini`):
@@ -184,7 +194,8 @@ server enforces the floor, floored hits stay visible in the activity feed
 marked as filtered, and a server too old for `min_rank_score` pays one
 400-retry before the client applies the same cut locally — as do values ≥ 1,
 which sit outside the server's valid `[0,1)`.
->>>>>>> eaccee5 (docs: correct relevance-floor and recall-cap documentation)
+
+> > > > > > > eaccee5 (docs: correct relevance-floor and recall-cap documentation)
 
 Treat `0.5` as a serve-guard, not a relevance verdict. It is calibrated
 against near-zero-signal queries landing in the low composite range, not

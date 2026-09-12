@@ -825,8 +825,7 @@ func WithEpisodicMinChars(n int) Option {
 }
 
 // WithDistillOnWrite distils each fresh episodic capture into durable facts at
-// write time. No-op without a distiller, so the server always enables it and
-// lets LLM presence decide whether it runs.
+// write time. No-op without a distiller.
 func WithDistillOnWrite(on bool) Option {
 	return func(s *Service) { s.distillOnWrite = on }
 }
@@ -839,8 +838,7 @@ func WithDistillDropNoFact(on bool) Option {
 }
 
 // WithExtractOnWrite runs each fresh episodic capture through the no-LLM
-// heuristic extractor. Only fires when no distiller is configured, so the server
-// always enables it and lets LLM absence decide whether it runs.
+// heuristic extractor. Only fires when no distiller is configured.
 func WithExtractOnWrite(on bool) Option {
 	return func(s *Service) { s.extractOnWrite = on }
 }
@@ -2113,6 +2111,9 @@ func (s *Service) invalidate(ctx context.Context, m *memory.Memory, newID string
 type RecallInput struct {
 	Namespace string
 	Query     string
+	// NoReinforce returns and logs results without changing access counts,
+	// access timestamps, confidence, or expiry. Use for automatic injection.
+	NoReinforce bool
 	// Source is the "why" behind this recall — which integration or code path
 	// asked for it (documented vocabulary: "pretool", "session_start", "mcp",
 	// "ui", "api", "answer", "doctor"). It is recorded verbatim in the recall
@@ -2551,7 +2552,9 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	// drop count (budget_omitted), keeping the omission visible. The Omitted
 	// out-param is written inside applyRecallBudget.
 	results, budgetOmitted := applyRecallBudget(in, results)
-	s.reinforceResults(ctx, results)
+	if !in.NoReinforce {
+		s.reinforceResults(ctx, results)
+	}
 	// Reinforcement rolls usage up into per-memory counters; the activity log
 	// keeps the detail those counters throw away — which query served this
 	// memory, at what rank, with what score. Floored hits are logged too (marked),

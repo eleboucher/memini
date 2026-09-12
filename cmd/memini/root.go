@@ -365,9 +365,9 @@ func buildServiceStack(
 		service.WithEventLog(cfg.ActivityLog),
 		// Write-time fact building self-selects: distill (LLM) no-ops without a
 		// consolidator; extract (heuristic) only fires when no LLM is configured.
-		service.WithDistillOnWrite(true),
+		service.WithDistillOnWrite(cfg.DistillOnWrite),
 		service.WithDistillBatch(cfg.DistillBatchTokens, cfg.DistillBatchMaxAge),
-		service.WithExtractOnWrite(true),
+		service.WithExtractOnWrite(cfg.DistillOnWrite),
 		service.WithMetrics(metricsImpl),
 	)
 	// Spaced-repetition stability is a process-global tuning constant (peer to

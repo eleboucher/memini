@@ -39,6 +39,54 @@ func (f failEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, e
 	return f.inner.Embed(ctx, texts)
 }
 
+type invalidAnchorEmbedder struct {
+	embed.Embedder
+	dims int
+}
+
+func (e invalidAnchorEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	vecs, err := e.Embedder.Embed(ctx, texts)
+	if err != nil {
+		return nil, err
+	}
+	for i, text := range texts {
+		if text == "ferns reproduce via spores" {
+			vecs[i] = make([]float32, e.dims)
+		}
+	}
+	return vecs, nil
+}
+
+func TestDedupSkipsInvalidAnchor(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		dims int
+	}{
+		{"empty", 0}, {"wrong dimensions", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, emb := openStoreAndFake(t)
+			putContent(t, st, emb, "dup-lo", "the sky is blue", 0.1)
+			putContent(t, st, emb, "dup-hi", "the sky is blue", 0.9)
+			putContent(t, st, emb, "invalid", "ferns reproduce via spores", 0.0)
+			var logs strings.Builder
+			rep, err := maintenance.Dedup(context.Background(), st, invalidAnchorEmbedder{emb, tc.dims}, maintenance.DedupOptions{
+				Namespaces: []string{dedupTestNS}, Similarity: 0.9, Now: nowFixed(t),
+				Log: slog.New(slog.NewTextHandler(&logs, nil)),
+			})
+			if err != nil {
+				t.Fatalf("dedup: %v", err)
+			}
+			if rep.ClustersFound != 1 || rep.Tombstoned != 1 {
+				t.Fatalf("valid duplicates were not collapsed: %+v", rep)
+			}
+			if !strings.Contains(logs.String(), "invalid") {
+				t.Fatalf("missing skipped-anchor warning: %s", logs.String())
+			}
+		})
+	}
+}
+
 const (
 	dedupDims    = 64
 	dedupTestNS  = "ns"

@@ -1409,6 +1409,9 @@ type SearchRequest struct {
 	// QueryRewrite When true and an LLM is configured, rewrite the query into 2-3 diverse variants before recall and fuse results via RRF. Cheapest read-path LLM lever; opt-in per call.
 	QueryRewrite *bool `json:"query_rewrite,omitempty"`
 
+	// Reinforce Whether returned memories count as used. Set false for automatic context injection: results are still logged, but access counts, access timestamps, confidence, and expiry are unchanged. Omitted or true preserves reinforcement for explicit recalls.
+	Reinforce *bool `json:"reinforce,omitempty"`
+
 	// ResponseFormat "detailed" (default, and the behavior when absent) returns each result's full stored content. "concise" replaces each result's memory.content with its compact form — the summary when one exists, else the content cut at a word/sentence boundary to at most 240 runes with a "…" suffix — and sets memory.content_truncated on results whose concise text is such a cut. A projection at response mapping only: ranking, filters, and scores are identical across formats, and memory.content_hash is always computed over the full stored content. Fetch full text with GET /v1/memories/{id}.
 	ResponseFormat *SearchRequestResponseFormat `json:"response_format,omitempty"`
 

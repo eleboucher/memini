@@ -1334,6 +1334,14 @@ components:
       required: [query]
       properties:
         query: { type: string }
+        reinforce:
+          type: boolean
+          default: true
+          description: >
+            Whether returned memories count as used. Set false for automatic
+            context injection: results are still logged, but access counts,
+            access timestamps, confidence, and expiry are unchanged.
+            Omitted or true preserves reinforcement for explicit recalls.
         source:
           type: string
           description: >

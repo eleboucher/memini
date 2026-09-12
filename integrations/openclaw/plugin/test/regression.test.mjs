@@ -526,9 +526,39 @@ test("recall sends recall_limit, no min_score, and the default 0.5 min_rank_scor
     await hooks.before_prompt_build({ prompt: "q" }, {});
     const search = JSON.parse(requests.find((r) => r.url.endsWith("/v1/search")).init.body);
     assert.equal(search.limit, 2);
+    assert.equal(search.reinforce, false, "automatic injection must not count as explicit use");
     assert.equal(search.min_score, undefined, "the fused-scale min_score is never sent");
     assert.equal(search.min_rank_score, 0.5, "no floor knob set → the 0.5 default composite floor still rides the request");
     assert.equal(search.exclude_turns_younger_than, undefined, "server-side guard is on by default; plugin does not opt in");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("automatic recall never retries with reinforcement on an older server", async () => {
+  const hooks = {};
+  const searches = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = withHandshakeFailure(async (_url, init) => {
+    const body = JSON.parse(init.body);
+    searches.push(body);
+    return {
+      ok: body.reinforce === undefined,
+      status: body.reinforce === undefined ? 200 : 400,
+      async json() { return { results: [{ memory: { summary: "would reinforce", tier: "semantic" }, score: 0.9 }] }; },
+      async text() { return 'unknown field "reinforce"'; },
+    };
+  });
+  try {
+    await plugin.register({
+      pluginConfig: { enabled: true, namespace_per_agent: false },
+      registerMemoryCapability() {}, registerHook() {}, registerTool() {},
+      on(name, handler) { hooks[name] = handler; },
+      logger: { warn() {} },
+    });
+    assert.equal(await hooks.before_prompt_build({ prompt: "q" }, {}), undefined);
+    assert.equal(searches.length, 2);
+    assert.ok(searches.every((body) => body.reinforce === false));
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -749,6 +779,7 @@ test("recall sends exclude_ids and falls back when the server rejects them", asy
     const [, , withField, retry] = searches();
     assert.deepEqual(withField.body.exclude_ids, ["m1"], "first attempt still carries exclude_ids");
     assert.equal(retry.body.exclude_ids, undefined, "the retry must drop exclude_ids");
+    assert.equal(retry.body.reinforce, false, "compatibility retries must not enable reinforcement");
     await hooks.before_prompt_build({ prompt: "q" }, ctx);
     assert.equal(searches().length, 5, "after the fallback each recall is a single request");
     assert.equal(searches()[4].body.exclude_ids, undefined, "exclude_ids is never sent again");

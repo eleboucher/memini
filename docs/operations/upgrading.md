@@ -131,19 +131,22 @@ The two fixed retrieval ones are the ones to care about. If you had moved `MEMIN
 
 Behaviour that used to be opt-in (or opt-out) is now unconditional. Setting these does nothing.
 
-| Removed                          | Now                                                                                         |
-| -------------------------------- | ------------------------------------------------------------------------------------------- |
-| `MEMINI_REDACT_SECRETS`          | Secret redaction is always on.                                                              |
-| `MEMINI_WRITE_DEDUP_FINGERPRINT` | Exact-restatement dedup is always on.                                                       |
-| `MEMINI_REINFORCE_SKIP_MARKERS`  | Always on.                                                                                  |
-| `MEMINI_DISTILL_ON_WRITE`        | Write-time fact building is automatic (LLM when configured, heuristic extractor otherwise). |
-| `MEMINI_EXTRACT_ON_WRITE`        | Same as above.                                                                              |
-| `MEMINI_DISTILL_DROP_NO_FACT`    | Removed; episodic captures are always kept.                                                 |
-| `MEMINI_QUARANTINE_GARBLED`      | Removed; garbled-content downranking is no longer configurable.                             |
+| Removed                          | Now                                                                               |
+| -------------------------------- | --------------------------------------------------------------------------------- |
+| `MEMINI_REDACT_SECRETS`          | Secret redaction is always on.                                                    |
+| `MEMINI_WRITE_DEDUP_FINGERPRINT` | Exact-restatement dedup is always on.                                             |
+| `MEMINI_REINFORCE_SKIP_MARKERS`  | Always on.                                                                        |
+| `MEMINI_EXTRACT_ON_WRITE`        | Use `MEMINI_DISTILL_ON_WRITE` for both LLM distillation and heuristic extraction. |
+| `MEMINI_DISTILL_DROP_NO_FACT`    | Removed; episodic captures are always kept.                                       |
+| `MEMINI_QUARANTINE_GARBLED`      | Removed; garbled-content downranking is no longer configurable.                   |
 
 If you had _disabled_ one of these (say `MEMINI_REDACT_SECRETS=false`), it is now on and you cannot turn it off.
 
 The full generated table lives in [configuration.md](../reference/configuration.md#removed-settings), which is generated from the code and is always current.
+
+`MEMINI_DISTILL_ON_WRITE` is configurable again (default `true`). Set it to
+`false` to keep episodic captures without building durable facts at write time.
+Usage-driven promotion still runs independently.
 
 ## Long memories can now be searched past the embedding budget (opt-in)
 

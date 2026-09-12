@@ -161,6 +161,47 @@ func TestDistillOnWrite(t *testing.T) {
 	})
 }
 
+func TestWriteTimeFactsDisabled(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		llm   bool
+		batch int
+	}{
+		{"heuristic", false, 0}, {"per capture", true, 0}, {"batched", true, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := openTestStore(t)
+			dist := &countingDistiller{fact: "use Postgres for concurrent writes"}
+			opts := []service.Option{
+				service.WithDistillOnWrite(false), service.WithExtractOnWrite(false),
+				service.WithDistillBatch(tc.batch, 0),
+			}
+			if tc.llm {
+				opts = append(opts, service.WithDistiller(dist))
+			}
+			svc := service.New(st, embedtest.New(dims), opts...)
+			_, err := svc.Remember(context.Background(), service.RememberInput{
+				Namespace: "alice", Tier: memory.TierEpisodic,
+				Content:  "user: which db?\nassistant: We decided to use Postgres instead of SQLite because we need concurrent writes.",
+				Metadata: map[string]any{"session_id": "sess-1"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			svc.WaitBackground()
+			if got := tierCount(t, st, "alice", memory.TierEpisodic); got != 1 {
+				t.Fatalf("captures = %d, want 1", got)
+			}
+			if got := durableCount(t, st, "alice"); got != 0 {
+				t.Fatalf("facts = %d, want 0", got)
+			}
+			if got := dist.calls.Load(); got != 0 {
+				t.Fatalf("distiller calls = %d, want 0", got)
+			}
+		})
+	}
+}
+
 // TestDistillDropNoFact pins the drop-when-no-fact filter: when distillation
 // extracts nothing durable, the episodic is deleted (only with the opt-in).
 func TestDistillDropNoFact(t *testing.T) {

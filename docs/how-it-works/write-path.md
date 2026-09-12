@@ -117,7 +117,7 @@ Everything after the commit is asynchronous and best-effort — the write's late
 
 - **Auto-supersede.** If the dedup gate named a near-duplicate to replace, it is tombstoned now, safely after the replacement is durable.
 - **Consolidation** (opt-in, LLM). A fresh durable write can be merged or contradiction-resolved against existing memories, either before the caller sees the result (sync) or in the background (async).
-- **Fact building.** Fresh short-term captures are distilled (LLM) or marker-extracted (heuristic) into durable facts at write time, so knowledge doesn't have to wait for the batch promoter.
+- **Fact building.** Fresh short-term captures are distilled (LLM) or marker-extracted (heuristic) into durable facts at write time, so knowledge doesn't have to wait for the batch promoter. Set `MEMINI_DISTILL_ON_WRITE=false` to disable both paths and keep only the captures. Usage-driven promotion still runs independently.
 - **Corroborate / contradict nearest.** A short-term write that restates an existing durable fact grows that fact's confidence; a durable write that _contradicts_ one (changed value, flipped polarity) invalidates the stale fact so the new one outranks it.
 
 What happens to the memory from here — reinforcement, promotion, demotion, decay, and time-travel — is the subject of [lifecycle](./lifecycle.md). For a single fact traced through its whole life, see [the life story of a memory](../examples/memory-life-story.md).

@@ -526,8 +526,11 @@ type Config struct {
 	// rather than silently behaving as 0.
 	ClassifyMaxChars int `env:"MEMINI_CLASSIFY_MAX_CHARS" envDefault:"400"`
 
-	// Write-time fact building (LLM distill, else heuristic extract) is automatic;
-	// it self-selects on LLM presence, so there is no toggle.
+	// DistillOnWrite builds durable facts from fresh short-term captures using
+	// the LLM, or the heuristic extractor when no LLM is configured. Set false
+	// to keep captures without creating facts at write time. Usage-driven
+	// promotion still runs independently.
+	DistillOnWrite bool `env:"MEMINI_DISTILL_ON_WRITE" envDefault:"true"`
 
 	// DistillBatchTokens batches distill-on-write per session: captures
 	// accumulate until roughly this many (estimated) tokens, then distill as
@@ -804,8 +807,7 @@ var deprecatedVars = []struct {
 	{"MEMINI_REINFORCE_SKIP_MARKERS", "always on", false},
 	{"MEMINI_WRITE_DEDUP_FINGERPRINT", "exact-restatement dedup is always on", false},
 	{"MEMINI_QUARANTINE_GARBLED", "removed; garbled-content downranking is no longer configurable", false},
-	{"MEMINI_DISTILL_ON_WRITE", "write-time fact building is automatic (LLM when configured, heuristic extractor otherwise)", false},
-	{"MEMINI_EXTRACT_ON_WRITE", "write-time fact building is automatic (LLM when configured, heuristic extractor otherwise)", false},
+	{"MEMINI_EXTRACT_ON_WRITE", "use MEMINI_DISTILL_ON_WRITE for LLM distillation and heuristic extraction", false},
 	{"MEMINI_DISTILL_DROP_NO_FACT", "removed; episodic captures are always kept", false},
 	{"MEMINI_GLOBAL_NAMESPACE", "the scope model changed: namespaces are now always merged via the ancestor " +
 		"cascade, replacing the old opt-in global namespace. Run `memini migrate scopes` to fold any " +

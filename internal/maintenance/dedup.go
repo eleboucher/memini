@@ -215,6 +215,13 @@ func dedupNamespace(ctx context.Context, st store.Store, emb embed.Embedder, ns 
 	// closure is computed transitively, then components are resolved once.
 	u := newUnionFind(idsOf(mems))
 	for i, anchor := range mems {
+		if err := ctx.Err(); err != nil {
+			return res, err
+		}
+		if i >= len(vecs) || len(vecs[i]) == 0 || len(vecs[i]) != emb.Dims() {
+			log.WarnContext(ctx, "dedup: skipping anchor with invalid embedding", "namespace", ns, "id", anchor.ID)
+			continue
+		}
 		cands, err := st.VectorSearch(ctx, ns, vecs[i], f, opts.NeighboursPerAnchor)
 		if err != nil {
 			return res, err

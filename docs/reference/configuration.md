@@ -94,6 +94,7 @@ server deployment. Treat the rest as tuning you reach for when you have a reason
 | [`MEMINI_CLASSIFY_MAX_CHARS`](#memini_classify_max_chars) | `400` | [Write-time dedup and contradiction](#write-time-dedup-and-contradiction) |
 | [`MEMINI_CONSOLIDATE_MODE`](#memini_consolidate_mode) | `async` | [Consolidation and promotion](#consolidation-and-promotion) |
 | [`MEMINI_CONSOLIDATE_MIN_SCORE`](#memini_consolidate_min_score) | `0.3` | [Consolidation and promotion](#consolidation-and-promotion) |
+| [`MEMINI_DISTILL_ON_WRITE`](#memini_distill_on_write) | `true` | [Consolidation and promotion](#consolidation-and-promotion) |
 | [`MEMINI_DISTILL_BATCH_TOKENS`](#memini_distill_batch_tokens) | `1024` | [Consolidation and promotion](#consolidation-and-promotion) |
 | [`MEMINI_DISTILL_BATCH_MAX_AGE`](#memini_distill_batch_max_age) | `10m` | [Consolidation and promotion](#consolidation-and-promotion) |
 | [`MEMINI_DISTILL_TIMEOUT`](#memini_distill_timeout) | `60s` | [Consolidation and promotion](#consolidation-and-promotion) |
@@ -590,6 +591,12 @@ float64, default `0.3`. Set by `Config.ConsolidateMinScore`.
 
 `MEMINI_CONSOLIDATE_MIN_SCORE` gates the LLM: it runs only when the nearest candidate scores at least this. 0 disables the gate.
 
+### `MEMINI_DISTILL_ON_WRITE`
+
+bool, default `true`. Set by `Config.DistillOnWrite`.
+
+`MEMINI_DISTILL_ON_WRITE` builds durable facts from fresh short-term captures using the LLM, or the heuristic extractor when no LLM is configured. Set false to keep captures without creating facts at write time. Usage-driven promotion still runs independently.
+
 ### `MEMINI_DISTILL_BATCH_TOKENS`
 
 int, default `1024`. Set by `Config.DistillBatchTokens`.
@@ -842,7 +849,6 @@ old tuning value quietly stops applying. If you are upgrading, read
 | `MEMINI_REINFORCE_SKIP_MARKERS` | always on |
 | `MEMINI_WRITE_DEDUP_FINGERPRINT` | exact-restatement dedup is always on |
 | `MEMINI_QUARANTINE_GARBLED` | removed; garbled-content downranking is no longer configurable |
-| `MEMINI_DISTILL_ON_WRITE` | write-time fact building is automatic (LLM when configured, heuristic extractor otherwise) |
-| `MEMINI_EXTRACT_ON_WRITE` | write-time fact building is automatic (LLM when configured, heuristic extractor otherwise) |
+| `MEMINI_EXTRACT_ON_WRITE` | use MEMINI_DISTILL_ON_WRITE for LLM distillation and heuristic extraction |
 | `MEMINI_DISTILL_DROP_NO_FACT` | removed; episodic captures are always kept |
 

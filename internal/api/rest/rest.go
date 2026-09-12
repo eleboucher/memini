@@ -483,6 +483,7 @@ func (h *Server) SearchMemories(w http.ResponseWriter, r *http.Request, _ Search
 	in.Metadata = deref(req.Metadata)
 	in.ExcludeMetadata = deref(req.ExcludeMetadata)
 	in.ExcludeIDs = deref(req.ExcludeIds)
+	in.NoReinforce = req.Reinforce != nil && !*req.Reinforce
 	if req.IncludeFreshTurns != nil {
 		in.IncludeFreshTurns = *req.IncludeFreshTurns
 	}

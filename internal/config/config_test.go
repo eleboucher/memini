@@ -505,6 +505,7 @@ func TestDedupTierList(t *testing.T) {
 }
 
 var meminiEnvKeys = []string{
+	"MEMINI_DISTILL_ON_WRITE",
 	"MEMINI_HTTP_ADDR", "MEMINI_SHUTDOWN_TIMEOUT", "MEMINI_LOG_LEVEL", "MEMINI_LOG_FORMAT",
 	"MEMINI_BACKEND", "MEMINI_SQLITE_PATH", "MEMINI_POSTGRES_DSN",
 	"MEMINI_EMBED_BASE_URL", "MEMINI_EMBED_API_KEY", "MEMINI_EMBED_MODEL", "MEMINI_EMBED_DIMS",
@@ -529,6 +530,34 @@ var meminiEnvKeys = []string{
 	"MEMINI_GLOBAL_NAMESPACE", "MEMINI_TENANT_SHARED",
 	"MEMINI_HOME",
 	"MEMINI_CLIENT_DEFAULTS",
+}
+
+func TestDistillOnWriteConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name, value string
+		want        bool
+	}{
+		{"default", "", true}, {"disabled", "false", false}, {"enabled", "true", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearMeminiEnv(t)
+			if tc.value != "" {
+				t.Setenv("MEMINI_DISTILL_ON_WRITE", tc.value)
+			}
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.DistillOnWrite != tc.want {
+				t.Fatalf("DistillOnWrite = %v, want %v", cfg.DistillOnWrite, tc.want)
+			}
+			for _, warning := range config.DeprecationWarnings() {
+				if strings.Contains(warning, "MEMINI_DISTILL_ON_WRITE") {
+					t.Fatalf("live setting reported as removed: %s", warning)
+				}
+			}
+		})
+	}
 }
 
 // TestUndeprecatedVarsAreLive pins that a variable which is read is never also

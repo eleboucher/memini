@@ -4,13 +4,13 @@
 
 ## The three pull surfaces
 
-| Surface                  | Trigger                                                                | Query             | Default scope | Default budget                              | Reinforces? |
-| ------------------------ | ---------------------------------------------------------------------- | ----------------- | ------------- | ------------------------------------------- | ----------- |
-| Session-start briefing   | the session opens (plugin hook)                                        | none — query-less | `full`        | 600 tokens (plugin default, server-trimmed) | **never**   |
-| Per-prompt injection     | each user prompt, after shape gates (length, not a command, cooldowns) | the prompt text   | `full`        | 3 hits, 250 tokens, composite floor 0.5     | yes         |
-| Explicit `memory_recall` | the agent decides ("check memory before touching this file")           | the agent's query | `full`        | 10 hits, unbounded tokens unless asked      | yes         |
+| Surface                  | Trigger                                                                | Query             | Default scope | Default budget                              | Reinforces?      |
+| ------------------------ | ---------------------------------------------------------------------- | ----------------- | ------------- | ------------------------------------------- | ---------------- |
+| Session-start briefing   | the session opens (plugin hook)                                        | none — query-less | `full`        | 600 tokens (plugin default, server-trimmed) | **never**        |
+| Per-prompt injection     | each user prompt, after shape gates (length, not a command, cooldowns) | the prompt text   | `full`        | 3 hits, 250 tokens, composite floor 0.5     | client-dependent |
+| Explicit `memory_recall` | the agent decides ("check memory before touching this file")           | the agent's query | `full`        | 10 hits, unbounded tokens unless asked      | yes              |
 
-The briefing's refusal to reinforce is deliberate, not an omission: it fires on every session start over the same top-N regardless of relevance, so counting a briefing serve as "this memory was used" would inflate access counts uniformly and distort the promotion and ranking that depend on them. The activity log still records what each briefing served; the counters stay clean. Explicit recall and the per-prompt injection do reinforce: each served memory's access count bumps and its expiry slides forward by its own lifetime, so what actually gets used stops decaying.
+The briefing's refusal to reinforce is deliberate, not an omission: it fires on every session start over the same top-N regardless of relevance, so counting a briefing serve as "this memory was used" would inflate access counts uniformly and distort the promotion and ranking that depend on them. The activity log still records what each briefing served; the counters stay clean. Explicit recall reinforces: each served memory's access count bumps and its expiry slides forward by its own lifetime. Automatic callers can send `reinforce: false` to search without changing retention; the OpenClaw prompt hook uses this flag. Results still appear in the activity log.
 
 The plugin adds a fourth, narrower surface — a pre-tool-use lookup before file edits — with its own gates and a 200-token budget; see [the plugin doc](./plugin.md) for its mechanics and [recall in practice](../examples/recall-in-practice.md) for a worked comparison of the surfaces.
 
@@ -60,7 +60,7 @@ After the composite, a fixed sequence of adjustments runs:
 6. **One-hop link expansion.** With `include_linked`, memories explicitly linked from a served result are fetched and merged in at a synthetic score of half the lowest direct hit, so they always rank below direct results. The floor runs _before_ this step on purpose — a floor applied after would wipe out every synthetic-scored linked hit and silently defeat the option, so linked hits are exempt from it.
 7. **The token budget.** When the caller sets one, results fill in final rank order until the next would exceed it, and the tail is dropped — whole items only, with the drop count reported, and the first result always ships even if it alone busts the budget. A non-empty recall never becomes empty by budget.
 
-Only then does reinforcement run, over exactly the results the caller received. The knobs behind most of these stages — floors, reserves, timeouts — are covered symptom-first in [tuning recall](../guides/tuning-recall.md).
+Unless the caller sets `reinforce: false`, reinforcement then runs over exactly the results the caller received. The knobs behind most of these stages — floors, reserves, timeouts — are covered symptom-first in [tuning recall](../guides/tuning-recall.md).
 
 ## Degraded recall
 

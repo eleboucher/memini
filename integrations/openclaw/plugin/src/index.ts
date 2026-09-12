@@ -2051,6 +2051,7 @@ const plugin: {
       // tracks no content hash, so a per-call strip matches _shared.mjs).
       const stripped = { ...body };
       delete stripped.min_rank_score;
+      // Keep reinforce=false: retrying without it would count injection as use.
       const retry = await client.postJson("/v1/search", stripped, ns);
       if (retry !== null && withExcludeIds) {
         serverExcludeIds = false;
@@ -2069,7 +2070,7 @@ const plugin: {
       if (!agentPolicy(live, hookCtx).recall) return;
       const ns = effectiveNamespace(live, hookCtx);
       if (ns == null) return;
-      const body: any = { query: prompt, limit: live.recall_limit };
+      const body: any = { query: prompt, limit: live.recall_limit, reinforce: false };
       // inject_recall_min_score floors the FINAL composite score server-side via
       // min_rank_score (not the fused-scale min_score), matching the Claude Code
       // plugin. A knob >= 1 is out of the server's range, so it clamps to a
