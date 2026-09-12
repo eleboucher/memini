@@ -10,6 +10,8 @@
   "type": "module",
   "scripts": {
     "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --external:typebox --external:openclaw --alias:@memini/client=../../../packages/memini-client/src/index.ts --outfile=dist/index.js",
+    "pack:clawhub": "mkdir -p .clawhub && npm run build && npm pack --pack-destination .clawhub",
+    "publish:clawhub": "sh -c 'set -eu; mkdir -p .clawhub; npm run build; archive=$(npm pack --silent --pack-destination .clawhub); clawhub package publish \"./.clawhub/$archive\" --family code-plugin --wait'",
     "test": "node --test test/regression.test.mjs test/bundle.test.mjs && npx tsx --test test/helpers.test.ts",
     "typecheck": "tsc -p tsconfig.test.json"
   },

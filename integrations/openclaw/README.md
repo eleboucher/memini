@@ -51,6 +51,21 @@ mkdir -p ~/.openclaw/extensions/memini
 cp -r dist openclaw.plugin.json package.json plugin.yaml ~/.openclaw/extensions/memini/
 ```
 
+### Publish to ClawHub
+
+Publish the packed npm artifact, not the checkout directory. A local dependency
+tree can be hundreds of megabytes, while the release archive contains only the
+built bundle and plugin metadata:
+
+```bash
+cd integrations/openclaw/plugin
+npm run publish:clawhub
+```
+
+The command requires the authenticated `clawhub` CLI and writes its temporary
+archive under `.clawhub/`. To inspect the exact artifact without publishing,
+run `npm run pack:clawhub`.
+
 Claim the memory slot in `~/.openclaw/openclaw.json`:
 
 ```json

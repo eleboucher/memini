@@ -164,14 +164,13 @@ jobs:
           cd .smoke
           node --input-type=module -e 'import plugin from "@eleboucher/opencode-memini-v2"; if (plugin.id !== "memini" || typeof plugin.setup !== "function") process.exit(1)'
 
-      # OpenClaw plugin. The build (esbuild) bundles @memini/client into dist/
-      # so the published clawpack is self-contained; typebox stays an external
-      # npm dependency. `test` runs the bundle guard (issue #34) too.
+      # OpenClaw plugin. Pack the exact npm artifact uploaded to ClawHub, not
+      # the dependency-filled checkout; `test` also guards that release path.
       - name: Test OpenClaw plugin
         run: |
           cd integrations/openclaw/plugin
           pnpm install
-          pnpm run build
+          npm run pack:clawhub
           pnpm run test
 
       # Pi extension. Same bundling as OpenClaw: @memini/client is inlined into

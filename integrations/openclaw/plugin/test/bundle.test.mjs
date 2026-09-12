@@ -31,6 +31,19 @@ test("package.json declares only installable, published specs", () => {
   }
 });
 
+test("ClawHub release packs the allowlisted npm artifact before upload", () => {
+  assert.match(
+    pkg.scripts?.["pack:clawhub"] ?? "",
+    /npm pack --pack-destination \.clawhub/,
+    "pack:clawhub must create the small npm artifact instead of publishing the working directory",
+  );
+  assert.match(
+    pkg.scripts?.["publish:clawhub"] ?? "",
+    /npm pack --silent --pack-destination \.clawhub/,
+    "publish:clawhub must upload the packed artifact, not the source folder",
+  );
+});
+
 test("dist bundle inlines workspace packages (no bare @memini/* import)", (t) => {
   // The build (esbuild) inlines @memini/* workspace packages; this only runs
   // against a built dist/. CI always builds before testing, so the guard fires
