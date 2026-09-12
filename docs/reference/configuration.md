@@ -42,6 +42,7 @@ server deployment. Treat the rest as tuning you reach for when you have a reason
 | [`MEMINI_EMBED_BASE_URL`](#memini_embed_base_url) | none | [Embeddings](#embeddings) |
 | [`MEMINI_EMBED_API_KEY`](#memini_embed_api_key) | none | [Embeddings](#embeddings) |
 | [`MEMINI_EMBED_MODEL`](#memini_embed_model) | `text-embedding-3-small` | [Embeddings](#embeddings) |
+| [`MEMINI_EMBED_MODEL_ALIASES`](#memini_embed_model_aliases) | none | [Embeddings](#embeddings) |
 | [`MEMINI_EMBED_DIMS`](#memini_embed_dims) | `1536` | [Embeddings](#embeddings) |
 | [`MEMINI_EMBED_QUERY_PREFIX`](#memini_embed_query_prefix) | none | [Embeddings](#embeddings) |
 | [`MEMINI_EMBED_MAX_BATCH`](#memini_embed_max_batch) | `20` | [Embeddings](#embeddings) |
@@ -222,7 +223,13 @@ string, default none. Set by `Config.EmbedAPIKey`.
 
 string, default `text-embedding-3-small`. Set by `Config.EmbedModel`.
 
-`MEMINI_EMBED_MODEL` is the model name sent with each embeddings request. memini records which model produced a store's vectors and refuses to start when this later disagrees, because vectors from different models are not comparable and a silent swap degrades recall with no error. Use the `memini reembed` command to migrate a store, or `MEMINI_REEMBED_ON_MODEL_CHANGE` to do it automatically at startup.
+`MEMINI_EMBED_MODEL` is the model name sent with each embeddings request. memini records which model produced a store's vectors and refuses to start when this later disagrees, because vectors from different models are not comparable and a silent swap degrades recall with no error. Use the `memini reembed` command to migrate a store, `MEMINI_REEMBED_ON_MODEL_CHANGE` to do it automatically at startup, or `MEMINI_EMBED_MODEL_ALIASES` for an acknowledged rename.
+
+### `MEMINI_EMBED_MODEL_ALIASES`
+
+string, default none. Set by `Config.EmbedModelAliases`.
+
+`MEMINI_EMBED_MODEL_ALIASES` is a comma-separated list of recorded model names that are aliases for `MEMINI_EMBED_MODEL`. It is an explicit operator assertion that a routing-name change leaves vectors comparable, so memini relabels the store without re-embedding. Equal dimensionality alone is not enough: two unrelated models can produce vectors of the same width.
 
 ### `MEMINI_EMBED_DIMS`
 

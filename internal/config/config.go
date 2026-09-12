@@ -142,9 +142,15 @@ type Config struct {
 	// records which model produced a store's vectors and refuses to start when
 	// this later disagrees, because vectors from different models are not
 	// comparable and a silent swap degrades recall with no error. Use the
-	// `memini reembed` command to migrate a store, or ReembedOnModelChange to do
-	// it automatically at startup.
+	// `memini reembed` command to migrate a store, ReembedOnModelChange to do it
+	// automatically at startup, or EmbedModelAliases for an acknowledged rename.
 	EmbedModel string `env:"MEMINI_EMBED_MODEL" envDefault:"text-embedding-3-small"`
+	// EmbedModelAliases is a comma-separated list of recorded model names that
+	// are aliases for EmbedModel. It is an explicit operator assertion that a
+	// routing-name change leaves vectors comparable, so memini relabels the
+	// store without re-embedding. Equal dimensionality alone is not enough: two
+	// unrelated models can produce vectors of the same width.
+	EmbedModelAliases string `env:"MEMINI_EMBED_MODEL_ALIASES"`
 	// EmbedDims is the dimensionality of the embedding model, and it must match
 	// the model EmbedBaseURL actually serves. This is the most common setup
 	// mistake: the default suits text-embedding-3-small, so pointing at a 768 or
@@ -879,6 +885,19 @@ func (c *Config) RerankEnabled() bool { return c.Rerank != "" && c.Rerank != val
 // RerankIsLLM reports whether reranking uses the chat LLM rather than a
 // cross-encoder URL.
 func (c *Config) RerankIsLLM() bool { return c.Rerank == "llm" }
+
+// EmbedModelAliasList returns the non-empty, trimmed aliases configured for
+// EmbedModel. The configured model itself is not an alias.
+func (c *Config) EmbedModelAliasList() []string {
+	var aliases []string
+	for alias := range strings.SplitSeq(c.EmbedModelAliases, ",") {
+		alias = strings.TrimSpace(alias)
+		if alias != "" && alias != c.EmbedModel {
+			aliases = append(aliases, alias)
+		}
+	}
+	return aliases
+}
 
 // Load reads configuration from the environment and validates it.
 func Load() (*Config, error) {

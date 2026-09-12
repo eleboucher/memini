@@ -508,7 +508,7 @@ var meminiEnvKeys = []string{
 	"MEMINI_DISTILL_ON_WRITE",
 	"MEMINI_HTTP_ADDR", "MEMINI_SHUTDOWN_TIMEOUT", "MEMINI_LOG_LEVEL", "MEMINI_LOG_FORMAT",
 	"MEMINI_BACKEND", "MEMINI_SQLITE_PATH", "MEMINI_POSTGRES_DSN",
-	"MEMINI_EMBED_BASE_URL", "MEMINI_EMBED_API_KEY", "MEMINI_EMBED_MODEL", "MEMINI_EMBED_DIMS",
+	"MEMINI_EMBED_BASE_URL", "MEMINI_EMBED_API_KEY", "MEMINI_EMBED_MODEL", "MEMINI_EMBED_MODEL_ALIASES", "MEMINI_EMBED_DIMS",
 	"MEMINI_EMBED_QUERY_PREFIX",
 	"MEMINI_WRITE_DEDUP_SCORE", "MEMINI_WRITE_DEDUP_ACTION",
 	"MEMINI_LLM_BASE_URL", "MEMINI_LLM_API_KEY", "MEMINI_LLM_MODEL",
@@ -530,6 +530,23 @@ var meminiEnvKeys = []string{
 	"MEMINI_GLOBAL_NAMESPACE", "MEMINI_TENANT_SHARED",
 	"MEMINI_HOME",
 	"MEMINI_CLIENT_DEFAULTS",
+}
+
+func TestEmbedModelAliasList(t *testing.T) {
+	c := &config.Config{
+		EmbedModel:        "embed",
+		EmbedModelAliases: " app-a-embed,app-b-embed, embed, ,",
+	}
+	got := c.EmbedModelAliasList()
+	want := []string{"app-a-embed", "app-b-embed"}
+	if len(got) != len(want) {
+		t.Fatalf("EmbedModelAliasList() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("EmbedModelAliasList()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
 }
 
 func TestDistillOnWriteConfig(t *testing.T) {

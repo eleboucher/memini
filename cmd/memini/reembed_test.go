@@ -75,6 +75,49 @@ func TestReconcileEmbedModelRefusesByDefault(t *testing.T) {
 	}
 }
 
+// TestReconcileEmbedModelAdoptsExplicitAlias lets an operator acknowledge a
+// routing-name change without invoking the embeddings endpoint or rewriting
+// vectors. The store width was already verified while opening it.
+func TestReconcileEmbedModelAdoptsExplicitAlias(t *testing.T) {
+	ctx := context.Background()
+	st := openModelStore(t)
+	if err := st.SetEmbedModel(ctx, "app-a-embed"); err != nil {
+		t.Fatalf("seed model: %v", err)
+	}
+	cfg := &config.Config{
+		EmbedModel:        "embed",
+		EmbedModelAliases: "app-a-embed",
+	}
+
+	if err := reconcileEmbedModel(ctx, st, embedtest.New(reembedTestDims), cfg, quietLog()); err != nil {
+		t.Fatalf("reconcile alias: %v", err)
+	}
+	if got, _ := st.EmbedModel(ctx); got != "embed" {
+		t.Fatalf("recorded model = %q, want embed after alias adoption", got)
+	}
+}
+
+// TestGuardEmbedModelAdoptsExplicitAlias covers one-shot commands, which open
+// a store through buildStore instead of the long-running reconciliation path.
+func TestGuardEmbedModelAdoptsExplicitAlias(t *testing.T) {
+	ctx := context.Background()
+	st := openModelStore(t)
+	if err := st.SetEmbedModel(ctx, "app-a-embed"); err != nil {
+		t.Fatalf("seed model: %v", err)
+	}
+	cfg := &config.Config{
+		EmbedModel:        "embed",
+		EmbedModelAliases: "app-a-embed",
+	}
+
+	if err := guardEmbedModel(ctx, st, cfg); err != nil {
+		t.Fatalf("guard alias: %v", err)
+	}
+	if got, _ := st.EmbedModel(ctx); got != "embed" {
+		t.Fatalf("recorded model = %q, want embed after alias adoption", got)
+	}
+}
+
 // TestReconcileEmbedModelAutoReembeds re-embeds and adopts the new model when
 // the opt-in flag is set.
 func TestReconcileEmbedModelAutoReembeds(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -515,15 +516,16 @@ func wrapRerank(r rerank.Reranker, max int, onInFlight func(n int64), log *slog.
 }
 
 // buildStore opens the configured store and verifies the recorded embedding
-// model matches MEMINI_EMBED_MODEL, so a silent model swap (same dims, vectors
-// in an incomparable space) fails loudly instead of quietly degrading recall.
-// The `reembed` command uses openStore directly to bypass this guard.
+// model matches MEMINI_EMBED_MODEL (or an explicitly declared alias), so a
+// silent model swap (same dims, vectors in an incomparable space) fails loudly
+// instead of quietly degrading recall. The `reembed` command uses openStore
+// directly to bypass this guard.
 func buildStore(ctx context.Context, cfg *config.Config) (store.Store, error) {
 	st, err := openStore(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
-	if err := guardEmbedModel(ctx, st, cfg.EmbedModel); err != nil {
+	if err := guardEmbedModel(ctx, st, cfg); err != nil {
 		_ = st.Close()
 		return nil, err
 	}
@@ -544,10 +546,11 @@ func openStore(ctx context.Context, cfg *config.Config) (store.Store, error) {
 
 // guardEmbedModel records the configured embedding model on a fresh store and,
 // on an existing one, refuses to proceed when it differs from what the vectors
-// were produced with. A pre-existing store with no recorded model adopts the
-// current one (it is the best guess available). Stores that don't track the
-// model are left untouched.
-func guardEmbedModel(ctx context.Context, st store.Store, model string) error {
+// were produced with. An explicitly declared alias is an operator-approved
+// rename and updates the label without embedding. A pre-existing store with no
+// recorded model adopts the current one (it is the best guess available).
+// Stores that don't track the model are left untouched.
+func guardEmbedModel(ctx context.Context, st store.Store, cfg *config.Config) error {
 	ems, ok := st.(store.EmbedModelStore)
 	if !ok {
 		return nil
@@ -557,12 +560,19 @@ func guardEmbedModel(ctx context.Context, st store.Store, model string) error {
 		return err
 	}
 	if recorded == "" {
-		return ems.SetEmbedModel(ctx, model)
+		return ems.SetEmbedModel(ctx, cfg.EmbedModel)
 	}
-	if recorded != model {
-		return embedModelMismatchErr(recorded, model)
+	if recorded == cfg.EmbedModel {
+		return nil
 	}
-	return nil
+	if !embedModelAliasMatches(recorded, cfg) {
+		return embedModelMismatchErr(recorded, cfg.EmbedModel)
+	}
+	return ems.SetEmbedModel(ctx, cfg.EmbedModel)
+}
+
+func embedModelAliasMatches(recorded string, cfg *config.Config) bool {
+	return slices.Contains(cfg.EmbedModelAliasList(), recorded)
 }
 
 // embedModelMismatchErr describes a recorded-vs-configured embedding model
@@ -596,6 +606,14 @@ func reconcileEmbedModel(
 		return ems.SetEmbedModel(ctx, cfg.EmbedModel)
 	}
 	if recorded == cfg.EmbedModel {
+		return nil
+	}
+	if embedModelAliasMatches(recorded, cfg) {
+		if err := ems.SetEmbedModel(ctx, cfg.EmbedModel); err != nil {
+			return fmt.Errorf("recording embedding model alias rename: %w", err)
+		}
+		log.Warn("embedding model alias accepted; relabeling stored vectors without re-embedding",
+			"from", recorded, "to", cfg.EmbedModel)
 		return nil
 	}
 	if !cfg.ReembedOnModelChange {
