@@ -11,8 +11,8 @@ importers:
   integrations/openclaw/plugin:
     dependencies:
       typebox:
-        specifier: ^1.1.38
-        version: 1.3.5
+        specifier: ^1.3.30
+        version: 1.3.30
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
@@ -22,7 +22,7 @@ importers:
         version: 0.28.2
       openclaw:
         specifier: latest
-        version: 2026.9.3(@aws-sdk/credential-provider-node@3.972.64)(@opentelemetry/api@1.9.0)(@smithy/signature-v4@5.6.3)
+        version: 2026.9.4(@aws-sdk/credential-provider-node@3.972.64)(@opentelemetry/api@1.9.0)(@smithy/signature-v4@5.6.3)
       tsx:
         specifier: ^4.23.13
         version: 4.23.13
@@ -799,8 +799,8 @@ packages:
     resolution: {integrity: sha512-juG5VWh4qAivzTAeMzvY9xs9HY5rAcr2E4I7tiSSCokRFi7XIZCAu92ZkSTsIj1OPceCifL3cpfteP3pDT9/QQ==}
     engines: {node: '>=14.0.0'}
 
-  '@openclaw/ai@2026.9.3':
-    resolution: {integrity: sha512-nJLVeQwmmu2RHihHl1j0OYtSzFC8SZIYol6cf1g9PDI/y5eTm0m2muWoGCFtRitftwx+vuWN6LkKZfjWViCU4w==}
+  '@openclaw/ai@2026.9.4':
+    resolution: {integrity: sha512-OglePy7EiejsiMy2cqq4lGHijdt3RP29Phi90CdispR/h/k85hpYgC8/8kFPUgkxgy7i65gYELzrhai03D37pg==}
     engines: {node: '>=22.19.0'}
 
   '@openclaw/fs-safe-darwin-arm64@0.8.5':
@@ -853,8 +853,8 @@ packages:
     resolution: {integrity: sha512-MAuWVgZ+DZhakzfrbyn2NOKsZop3ES2ITeVCoAaDNb/NIxF45hAzYDXmp2G8W10CE/HGasL97QMC0+iBZNzHUQ==}
     engines: {node: '>=22'}
 
-  '@openclaw/proxyline@0.3.11':
-    resolution: {integrity: sha512-XDlrrQE0fapfTpqCBK9WB+U4W+/0lsrRIXI2nZ74W/lWMF+X4T5t2dfj8Ms250Th4qjnNi6WuSX5OZJqyLoZ3g==}
+  '@openclaw/proxyline@0.3.12':
+    resolution: {integrity: sha512-KPUvtLgORF0NWxiuUPwHBuxYhUsFgxnOm8+XkDR0on236lnfMF44A5BnOvBkeDV8wrBaGHs/rQ8kt1tB4WNhmw==}
     engines: {node: '>=22.19.0'}
     peerDependencies:
       undici: '>=8.5.0 <9'
@@ -1920,8 +1920,8 @@ packages:
       zod:
         optional: true
 
-  openclaw@2026.9.3:
-    resolution: {integrity: sha512-CzDHMeHdnjlIZ76ZyBb1lvLO4H/yBIMYXupFGGBN87x0853y3hg5nLAnKfxSKqLzqhbUKqy9ebDRAWWV4t8aew==}
+  openclaw@2026.9.4:
+    resolution: {integrity: sha512-lTQpEEe1Xm3u2PCHaPEr+vP8paGk1vLdHuzdItsNToaLI6hAqRVvgJYg+GxukJhETJp4tPy/S1Gftl4KuB8n7A==}
     engines: {node: '>=24.16.0 <25 || >=26.1.0'}
     hasBin: true
 
@@ -1990,10 +1990,6 @@ packages:
   pngjs@5.0.0:
     resolution: {integrity: sha512-40QW5YalBNfQo5yRYmiw7Yz6TKKVr3h6970B2YE+3fQpsWcrbj1PzJgxeJ19DRQjhMbKPIuMY8rFaXc8moolVw==}
     engines: {node: '>=10.13.0'}
-
-  pretty-ms@9.3.0:
-    resolution: {integrity: sha512-gjVS5hOP+M3wMm5nmNOucbIrqudzs9v/57bWRHQWLYklXqoXKrVfYW2W9+glfGsqtPgpiz5WwyEEB+ksXIx3gQ==}
-    engines: {node: '>=18'}
 
   pretty-ms@9.3.1:
     resolution: {integrity: sha512-HzMy3Geq23nVALD/M2LliU+F+M+gVNsvkQWWqeBZ8HDiCgzo6YPJ/Omrmtq24EFrIsk0a3EkQGEd7bDOo+IhGA==}
@@ -2246,8 +2242,8 @@ packages:
   typebox@1.3.28:
     resolution: {integrity: sha512-5hTNlwzKj7BPPqhT91TPa4fK9bh/ZOei7mzweMpNidwLTxtduXHgr/OAbwx4mRW8aKFYu1I8fT1+0+PQtst1/g==}
 
-  typebox@1.3.5:
-    resolution: {integrity: sha512-Va+8RjPkXCy5j+K6TXtaqrXlu+H5ijaw1mAZN6ql26MW4atY4T1Md/4CVvLCAKpb61hzVv1Xq0RxnaJ3UYq2jQ==}
+  typebox@1.3.30:
+    resolution: {integrity: sha512-vRmBLzlaq9O9dvfGmI5CssLGvDC/R594kH6N/Q1uUU5VPO3PTgQMlWe/UVNdNVTr2EET+FX8BWZkFdYgxTglbQ==}
 
   typebox@1.3.7:
     resolution: {integrity: sha512-meKuifc33Pccx0O6PdIzYMq3Og8zvP4TIi/a+Bw3AEMZMxOD0+RHGQvpglEe6Zdy3wZ8nqn/j95h8LUZLk/6Hg==}
@@ -2341,18 +2337,6 @@ packages:
 
   wrappy@1.0.2:
     resolution: {integrity: sha512-l4Sp/DRseor9wL6EvV2+TuQn63dMkPjZ/sp9XkghTEbV9KlPS1xUsZ3u7/IQO4wxtcFB4bgpQPRcR3QCvezPcQ==}
-
-  ws@8.21.0:
-    resolution: {integrity: sha512-Vsp28b7DRcimFQvrqu2Wek3z1iYxDCWqHYB8Qsnk/S4RfaCQzPGPyBNuVjJV3cd6UiKtUtp6sNM77gWvzcCH+g==}
-    engines: {node: '>=10.0.0'}
-    peerDependencies:
-      bufferutil: ^4.0.1
-      utf-8-validate: '>=5.0.2'
-    peerDependenciesMeta:
-      bufferutil:
-        optional: true
-      utf-8-validate:
-        optional: true
 
   ws@8.21.3:
     resolution: {integrity: sha512-201TZ/kPWxoPr/OKWjquZR1SWKXcvxdH+e1xrx89b3YbmzLMFCLfnaG1HFIgWzJOEWZ7MvpK++odZufgYR50Rw==}
@@ -3078,7 +3062,7 @@ snapshots:
   '@mistralai/mistralai@2.6.4(@opentelemetry/api@1.9.0)':
     dependencies:
       '@opentelemetry/semantic-conventions': 1.42.0
-      ws: 8.21.0
+      ws: 8.21.3
       zod: 4.4.3
       zod-to-json-schema: 3.25.2(zod@4.4.3)
     optionalDependencies:
@@ -3111,7 +3095,7 @@ snapshots:
 
   '@mozilla/readability@0.6.0': {}
 
-  '@openclaw/ai@2026.9.3(@aws-sdk/credential-provider-node@3.972.64)(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))(@opentelemetry/api@1.9.0)(@smithy/signature-v4@5.6.3)(undici@8.10.2)(ws@8.21.3)(zod@4.4.3)':
+  '@openclaw/ai@2026.9.4(@aws-sdk/credential-provider-node@3.972.64)(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))(@opentelemetry/api@1.9.0)(@smithy/signature-v4@5.6.3)(undici@8.10.2)(ws@8.21.3)(zod@4.4.3)':
     dependencies:
       '@anthropic-ai/sdk': 0.120.0(zod@4.4.3)
       '@google/genai': 2.19.0(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))
@@ -3167,7 +3151,7 @@ snapshots:
       '@openclaw/fs-safe-win32-x64-msvc': 0.8.5
       jszip: 3.10.1
 
-  '@openclaw/proxyline@0.3.11(undici@8.10.2)':
+  '@openclaw/proxyline@0.3.12(undici@8.10.2)':
     dependencies:
       undici: 8.10.2
 
@@ -3720,7 +3704,7 @@ snapshots:
       is-plain-obj: 4.1.0
       is-stream: 4.0.1
       npm-run-path: 6.0.0
-      pretty-ms: 9.3.0
+      pretty-ms: 9.3.1
       signal-exit: 4.1.0
       strip-final-newline: 4.0.0
       which-command: 0.1.0
@@ -4108,7 +4092,7 @@ snapshots:
   node-edge-tts@1.2.10:
     dependencies:
       https-proxy-agent: 7.0.6
-      ws: 8.21.0
+      ws: 8.21.3
       yargs: 17.7.3
     transitivePeerDependencies:
       - bufferutil
@@ -4161,7 +4145,7 @@ snapshots:
       ws: 8.21.3
       zod: 4.4.3
 
-  openclaw@2026.9.3(@aws-sdk/credential-provider-node@3.972.64)(@opentelemetry/api@1.9.0)(@smithy/signature-v4@5.6.3):
+  openclaw@2026.9.4(@aws-sdk/credential-provider-node@3.972.64)(@opentelemetry/api@1.9.0)(@smithy/signature-v4@5.6.3):
     dependencies:
       '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
       '@anthropic-ai/sdk': 0.120.0(zod@4.4.3)
@@ -4176,9 +4160,9 @@ snapshots:
       '@mistralai/mistralai': 2.6.4(@opentelemetry/api@1.9.0)
       '@modelcontextprotocol/sdk': 1.30.0(zod@4.4.3)
       '@mozilla/readability': 0.6.0
-      '@openclaw/ai': 2026.9.3(@aws-sdk/credential-provider-node@3.972.64)(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))(@opentelemetry/api@1.9.0)(@smithy/signature-v4@5.6.3)(undici@8.10.2)(ws@8.21.3)(zod@4.4.3)
+      '@openclaw/ai': 2026.9.4(@aws-sdk/credential-provider-node@3.972.64)(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))(@opentelemetry/api@1.9.0)(@smithy/signature-v4@5.6.3)(undici@8.10.2)(ws@8.21.3)(zod@4.4.3)
       '@openclaw/fs-safe': 0.8.5
-      '@openclaw/proxyline': 0.3.11(undici@8.10.2)
+      '@openclaw/proxyline': 0.3.12(undici@8.10.2)
       '@silvia-odwyer/photon-node': 0.3.4
       '@trycua/cua-driver': 0.22.2
       acorn: 8.18.0
@@ -4288,10 +4272,6 @@ snapshots:
   playwright-core@1.62.1: {}
 
   pngjs@5.0.0: {}
-
-  pretty-ms@9.3.0:
-    dependencies:
-      parse-ms: 4.0.0
 
   pretty-ms@9.3.1:
     dependencies:
@@ -4566,7 +4546,7 @@ snapshots:
 
   typebox@1.3.28: {}
 
-  typebox@1.3.5: {}
+  typebox@1.3.30: {}
 
   typebox@1.3.7: {}
 
@@ -4657,8 +4637,6 @@ snapshots:
       strip-ansi: 6.0.1
 
   wrappy@1.0.2: {}
-
-  ws@8.21.0: {}
 
   ws@8.21.3: {}
 
