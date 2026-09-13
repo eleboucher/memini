@@ -45,6 +45,22 @@ persistence:
     enabled: false              # no sqlite volume
 ```
 
+### Default Pod options
+
+`defaultPodOptions` merges with each controller's Pod options; controller values
+take precedence. For example, this adds a seccomp profile alongside the chart's
+user and group settings:
+
+```yaml
+defaultPodOptions:
+  securityContext:
+    seccompProfile:
+      type: RuntimeDefault
+```
+
+Set `defaultPodOptionsStrategy: overwrite` to replace each default option with
+the controller's value instead of merging it.
+
 ## Values
 
 | Key | Type | Default | Description |
@@ -75,6 +91,7 @@ persistence:
 | controllers.main.pod.securityContext | object | `{"fsGroup":65532,"runAsNonRoot":true,"runAsUser":65532}` | Pod-level security context. |
 | controllers.main.replicas | int | `1` | Replica count. sqlite is single-writer so keep at 1. With postgres (type: deployment) you can scale out, or drive it via horizontalPodAutoscaler. |
 | controllers.main.type | string | `"statefulset"` | Controller type. `statefulset` for the default sqlite backend (PVC at /data, single replica). For the postgres backend switch this to `deployment` (no PVC, scale-out) — see env MEMINI_BACKEND below. |
+| defaultPodOptionsStrategy | string | `"merge"` | Merge default Pod options with controller-specific options. Controller values take precedence. |
 | grafanaDashboards | object | `{"enabled":false,"folder":"memini"}` | Bundled Grafana dashboards, rendered as ConfigMaps for the grafana-operator (a custom chart key, not part of the common library). Point your Grafana CR's `dashboardsConfigMaps` selector at this release's namespace; the operator picks up any ConfigMap labelled `grafana_dashboard: "1"`. |
 | grafanaDashboards.enabled | bool | `false` | Render the bundled dashboard as a ConfigMap. |
 | grafanaDashboards.folder | string | `"memini"` | grafana_dashboard_folder annotation; controls where it lands in Grafana. |

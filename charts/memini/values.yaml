@@ -270,6 +270,9 @@ controllers:
           capabilities:
             drop:
               - ALL
+# -- Merge default Pod options with controller-specific options. Controller values take precedence.
+defaultPodOptionsStrategy: merge
+
 # -- ServiceAccount created for the workload.
 serviceAccount:
   main: {}

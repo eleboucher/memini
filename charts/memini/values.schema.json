@@ -779,8 +779,8 @@
       "type": "object"
     },
     "defaultPodOptionsStrategy": {
-      "default": "overwrite",
-      "description": "Set the strategy for the default pod options. Defaults to overwrite.\noverwrite: If pod-level options are set, use those instead of the defaults.\nmerge: If pod-level options are set, merge them with the defaults.",
+      "default": "merge",
+      "description": "Merge default Pod options with controller-specific options. Controller values take precedence.",
       "title": "defaultPodOptionsStrategy",
       "type": "string"
     },

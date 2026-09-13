@@ -46,6 +46,22 @@ persistence:
     enabled: false              # no sqlite volume
 ```
 
+### Default Pod options
+
+`defaultPodOptions` merges with each controller's Pod options; controller values
+take precedence. For example, this adds a seccomp profile alongside the chart's
+user and group settings:
+
+```yaml
+defaultPodOptions:
+  securityContext:
+    seccompProfile:
+      type: RuntimeDefault
+```
+
+Set `defaultPodOptionsStrategy: overwrite` to replace each default option with
+the controller's value instead of merging it.
+
 {{ template "chart.valuesSection" . }}
 
 ## Observability
