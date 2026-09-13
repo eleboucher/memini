@@ -32,6 +32,11 @@
     "extensions": [
       "./dist/index.js"
     ],
+    "install": {
+      "clawhubSpec": "clawhub:@eleboucher/memini",
+      "defaultChoice": "clawhub",
+      "minHostVersion": ">=2026.5.17"
+    },
     "compat": {
       "pluginApi": ">=2026.5.17"
     },
