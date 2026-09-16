@@ -326,6 +326,7 @@ func buildServiceStack(
 				service.WithReranker(reranker, name),
 				service.WithRerankTimeout(cfg.RerankTimeout),
 				service.WithRerankPool(cfg.RerankPool),
+				service.WithPromptRerank(cfg.RerankPrompt),
 			)
 			// With the score gate on, an empty rerank result is the gate's
 			// verdict ("nothing relevant"), not a backend pathology — recall

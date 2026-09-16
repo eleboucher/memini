@@ -286,6 +286,9 @@ type Service struct {
 	// "nothing relevant" verdict) instead of falling back to composite order.
 	// See WithRerankEmptyVerdict.
 	rerankEmptyVerdict bool
+	// rerankPrompt controls whether automatic prompt recalls use the configured
+	// reranker. It defaults true so existing prompt recall behavior is unchanged.
+	rerankPrompt bool
 	// rerankPool is how many composite-ranked candidates reach the reranker
 	// before the result is truncated to the caller's limit. 0 reranks only the
 	// limit itself, which reorders the result set but cannot rescue a candidate
@@ -598,6 +601,14 @@ func WithImportancePoolMin(f float64) Option {
 			s.importancePoolMin = f
 		}
 	}
+}
+
+// WithPromptRerank controls reranking for recalls whose Source is "prompt".
+// False keeps the same retrieval, filtering, deduplication, namespace, and
+// token-budget pipeline but returns composite order without calling the reranker.
+// Other recall sources always retain the configured reranking behavior.
+func WithPromptRerank(on bool) Option {
+	return func(s *Service) { s.rerankPrompt = on }
 }
 
 // WithRerankEmptyVerdict makes an EMPTY rerank result final instead of falling
@@ -997,6 +1008,7 @@ func New(st store.Store, e embed.Embedder, opts ...Option) *Service {
 		chunkCfg:              chunk.DefaultConfig(),
 		chunkScoreWeight:      1,
 		rerankTimeout:         defaultRerankTimeout,
+		rerankPrompt:          true,
 		distillTimeout:        distillOnWriteTimeout,
 		scoreFusionAlpha:      search.DefaultFusionAlpha, // convex score fusion by default; negative selects RRF
 		reservePromoteRatio:   defaultReservePromoteRatio,
@@ -2531,7 +2543,12 @@ func (s *Service) Recall(ctx context.Context, in RecallInput) ([]store.Scored, e
 	// consolidated facts/rules; the pool is already relevance-filtered upstream.
 	ranked = reserveDurableTiers(ranked, k, s.resolveSemanticReserve(in), s.reservePromoteRatio, s.reserveTopAnchor, s.reserveGatePercentile)
 	ranked = s.applyTurnEchoGuard(in, ranked)
-	finalized := s.finalizeRecall(ctx, in.Query, ranked, k)
+	var finalized []store.Scored
+	if in.Source == "prompt" && !s.rerankPrompt {
+		finalized = search.Dedup(ranked, k)
+	} else {
+		finalized = s.finalizeRecall(ctx, in.Query, ranked, k)
+	}
 	// Composite floor: split the finalized (post-rerank) list into served +
 	// floored on the final [0,1] score. Placed BEFORE maybeExpandLinked on
 	// purpose — linked hits carry a synthetic 0.5×min-direct score a
