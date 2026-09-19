@@ -30,6 +30,15 @@
       enabled: false,
     },
     {
+      // "auto" leaves package.json alone when the new version already
+      // satisfies the range, but still writes the bumped range into
+      // pnpm-lock.yaml's importers specifier, which --frozen-lockfile
+      // rejects (#273). "bump" moves both together.
+      description: "Keep npm manifests and lockfile specifiers in sync",
+      matchManagers: ["npm"],
+      rangeStrategy: "bump",
+    },
+    {
       description: "Automerge dev-tool patch/minor bumps in mise",
       matchFileNames: [".mise/config.toml"],
       matchUpdateTypes: ["minor", "patch"],
