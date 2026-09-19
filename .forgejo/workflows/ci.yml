@@ -105,13 +105,16 @@ jobs:
 
       # Install workspace deps (OpenClaw, Pi). Frozen mode makes package.json /
       # pnpm-lock.yaml drift a hard failure instead of rewriting the lock in CI.
+      # Every later pnpm run/exec reuses this install and passes
+      # --config.verify-deps-before-run=error: the default (install) would
+      # silently re-resolve unfrozen if it thought node_modules was stale.
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile --config.minimumReleaseAge=0
 
       # Shared client core: namespace override, settings introspection, and the
       # project-dir recovery the MCP headersHelper depends on.
       - name: Test shared client core
-        run: pnpm --filter @memini/client test
+        run: pnpm --config.verify-deps-before-run=error --filter @memini/client test
 
       # plugin/scripts/_client.gen.mjs is generated from packages/memini-client
       # and committed, because the plugin ships as raw files with no
@@ -119,7 +122,7 @@ jobs:
       # same gate as docs-check.
       - name: Check generated plugin client bundle is current
         run: |
-          pnpm --filter @memini/client run bundle
+          pnpm --config.verify-deps-before-run=error --filter @memini/client run bundle
           git diff --exit-code plugin/scripts/_client.gen.mjs
 
       # The UI's settings catalog and API schema are generated from
@@ -134,7 +137,7 @@ jobs:
       - name: Check generated UI files are current and UI type-checks
         run: |
           cd ui
-          pnpm install --ignore-workspace --config.minimumReleaseAge=0
+          pnpm install --ignore-workspace --frozen-lockfile --config.minimumReleaseAge=0
           pnpm run gen-api
           git diff --exit-code src/settings-catalog.gen.ts src/api-schema.gen.ts
           pnpm run typecheck
@@ -181,20 +184,15 @@ jobs:
       # npm dependency. `test` runs the bundle guard (issue #34) too.
       - name: Test OpenClaw plugin
         run: |
-          cd integrations/openclaw/plugin
-          pnpm install
-          pnpm run build
-          pnpm run test
+          pnpm --config.verify-deps-before-run=error --filter @eleboucher/memini run build
+          pnpm --config.verify-deps-before-run=error --filter @eleboucher/memini run test
 
       # Pi extension. Its standard test path type-checks against the pinned Pi
       # API, builds the bundle, runs focused tests, then packs, installs, and
       # imports the publication artifact. @memini/client is inlined; Pi's core
       # modules remain peers supplied by the host.
       - name: Test Pi plugin
-        run: |
-          cd integrations/pi/plugin
-          pnpm install
-          pnpm run test
+        run: pnpm --config.verify-deps-before-run=error --filter @eleboucher/pi-memini run test
 
       # Hermes memory provider (stdlib unittest, uses the inline-ABC fallback).
       - name: Test Hermes plugin
