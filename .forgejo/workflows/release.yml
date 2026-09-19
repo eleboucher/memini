@@ -76,6 +76,11 @@ jobs:
   clawhub:
     needs: [release]
     runs-on: docker
+    env:
+      # verifyDepsBeforeRun re-checks these at every `pnpm run`, so they must be
+      # set here and not as a --config flag on the install alone.
+      PNPM_CONFIG_MINIMUM_RELEASE_AGE: "0"
+      PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: "error"
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v7
       - name: Install Node.js
@@ -87,13 +92,13 @@ jobs:
         run: npm install -g pnpm@11
 
       - name: Install workspace dependencies
-        run: pnpm install --frozen-lockfile --config.minimumReleaseAge=0
+        run: pnpm install --frozen-lockfile
 
       # Build the TypeScript plugin (src/index.ts -> dist/) so the
       # published clawpack contains the ./dist/index.js entry referenced
       # by openclaw.extensions. dist/ is gitignored.
       - name: Build OpenClaw plugin
-        run: pnpm --config.verify-deps-before-run=error --filter @eleboucher/memini run build
+        run: pnpm --filter @eleboucher/memini run build
 
       - name: Install ClawHub CLI
         env:
@@ -241,6 +246,11 @@ jobs:
   pi-npm:
     needs: [release]
     runs-on: docker
+    env:
+      # verifyDepsBeforeRun re-checks these at every `pnpm run`, so they must be
+      # set here and not as a --config flag on the install alone.
+      PNPM_CONFIG_MINIMUM_RELEASE_AGE: "0"
+      PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: "error"
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v7
       - name: Install Node.js
@@ -253,7 +263,7 @@ jobs:
         run: npm install -g pnpm@11
 
       - name: Install workspace dependencies
-        run: pnpm install --frozen-lockfile --config.minimumReleaseAge=0
+        run: pnpm install --frozen-lockfile
 
       - name: Test, build and publish Pi extension to npm
         env:
@@ -266,7 +276,7 @@ jobs:
             echo "NPM_TOKEN secret is empty or missing" >&2
             exit 1
           fi
-          pnpm --config.verify-deps-before-run=error run build
+          pnpm run build
           npx tsx --test test/helpers.test.ts
       - name: Bump version and publish Pi extension to npm
         env:
