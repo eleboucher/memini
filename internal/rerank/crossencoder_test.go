@@ -394,3 +394,49 @@ func TestCrossEncoderAcceptsDataEnvelope(t *testing.T) {
 		}
 	}
 }
+
+func TestCrossEncoderOversizeDocNeverSendsEmptyBatch(t *testing.T) {
+	var got [][]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req rerankRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		got = append(got, append([]string(nil), req.Documents...))
+		if len(req.Documents) == 0 {
+			http.Error(w, `{"error":{"code":400,"message":"\"documents\" must be a non-empty string array"}}`, http.StatusBadRequest)
+			return
+		}
+		results := make([]rerankRes, len(req.Documents))
+		for i := range req.Documents {
+			results[i] = rerankRes{Index: i, RelevanceScore: 1.0 - float64(i)*0.1}
+		}
+		_ = json.NewEncoder(w).Encode(struct {
+			Results []rerankRes `json:"results"`
+		}{Results: results})
+	}))
+	defer srv.Close()
+
+	// Each doc truncates to MaxBatchChars, already over budget on its own.
+	ce, err := New(Config{BaseURL: srv.URL, MaxBatchChars: 200})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	cands := []Candidate{
+		{ID: "a", Content: strings.Repeat("x", 500)},
+		{ID: "b", Content: strings.Repeat("y", 500)},
+	}
+	ids, err := ce.Rerank(context.Background(), strings.Repeat("q", 40), cands)
+	if err != nil {
+		t.Fatalf("rerank: %v", err)
+	}
+	for i, docs := range got {
+		if len(docs) == 0 {
+			t.Fatalf("request %d sent an empty documents array", i)
+		}
+	}
+	if len(ids) != 2 {
+		t.Fatalf("want both candidates back, got %v", ids)
+	}
+}

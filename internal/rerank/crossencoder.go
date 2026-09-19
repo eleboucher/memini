@@ -15,6 +15,10 @@ import (
 )
 
 const defaultTimeout = 60 * time.Second
+
+// idleConnTimeout retires pooled conns before the backend does: llama-server
+// drops idle sockets after ~5s, and Go will not replay a POST that hits one.
+const idleConnTimeout = 4 * time.Second
 const maxRerankBodyBytes = 8 << 20
 
 // defaultTransport lifts MaxIdleConns above the stdlib default of 2/host
@@ -24,6 +28,7 @@ func defaultTransport(maxInFlight int) *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.MaxIdleConns = 100
 	t.MaxIdleConnsPerHost = 100
+	t.IdleConnTimeout = idleConnTimeout
 	if maxInFlight > 0 && maxInFlight < t.MaxIdleConnsPerHost {
 		t.MaxIdleConnsPerHost = maxInFlight
 	}
@@ -229,7 +234,9 @@ func (c *CrossEncoder) splitBatches(docs []string, query string, charCap int) []
 	cur := 0
 	for i, d := range docs {
 		dc := utf8.RuneCountInString(d)
-		if cur+dc > budget {
+		// i > start keeps every span non-empty: a doc over budget on its own
+		// would otherwise flush a zero-doc batch, which the server rejects.
+		if i > start && cur+dc > budget {
 			out = append(out, batchSpan{start: start, end: i})
 			start = i
 			cur = 0
