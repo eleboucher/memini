@@ -72,6 +72,7 @@ server deployment. Treat the rest as tuning you reach for when you have a reason
 | [`MEMINI_RERANK_MAX_DOC_CHARS`](#memini_rerank_max_doc_chars) | `2048` | [Reranking](#reranking) |
 | [`MEMINI_RERANK_LLM_MAX_DOC_CHARS`](#memini_rerank_llm_max_doc_chars) | `300` | [Reranking](#reranking) |
 | [`MEMINI_RERANK_MAX_CONCURRENCY`](#memini_rerank_max_concurrency) | `0` | [Reranking](#reranking) |
+| [`MEMINI_RERANK_PROMPT`](#memini_rerank_prompt) | `true` | [Reranking](#reranking) |
 | [`MEMINI_ACTIVITY_LOG`](#memini_activity_log) | `true` | [Activity log](#activity-log) |
 | [`MEMINI_ACTIVITY_RETENTION`](#memini_activity_retention) | `720h` | [Activity log](#activity-log) |
 | [`MEMINI_ACTIVITY_MAX_ROWS`](#memini_activity_max_rows) | `100000` | [Activity log](#activity-log) |
@@ -430,6 +431,12 @@ int, default `300`. Set by `Config.RerankLLMMaxDocChars`.
 int, default `0`. Set by `Config.RerankMaxConcurrency`.
 
 `MEMINI_RERANK_MAX_CONCURRENCY` caps in-flight rerank calls. 0 is unbounded. See `MEMINI_EMBED_MAX_CONCURRENCY` for the rationale.
+
+### `MEMINI_RERANK_PROMPT`
+
+bool, default `true`. Set by `Config.RerankPrompt`.
+
+`MEMINI_RERANK_PROMPT` controls whether automatic prompt recalls use the configured reranker. False skips cross-encoder/LLM reranking only for Source="prompt"; explicit and other recall sources retain full reranking. Defaults true to preserve existing behavior. False also bypasses `MEMINI_RERANK_MIN_SCORE` for prompt recalls; the composite min_rank_score floor still applies.
 
 ## Activity log
 

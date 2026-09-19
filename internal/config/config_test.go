@@ -85,6 +85,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.RerankMaxBatchChars != 6000 {
 		t.Errorf("RerankMaxBatchChars = %d, want 6000", cfg.RerankMaxBatchChars)
 	}
+	if !cfg.RerankPrompt {
+		t.Error("RerankPrompt = false, want true by default")
+	}
 	if cfg.StabilityK != 1 {
 		t.Errorf("StabilityK = %v, want 1", cfg.StabilityK)
 	}
@@ -173,6 +176,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("MEMINI_SWEEP_INTERVAL", "5m")
 	t.Setenv("MEMINI_LLM_BASE_URL", "http://localhost:8000/v1")
 	t.Setenv("MEMINI_DEFAULT_NAMESPACE", "team-a")
+	t.Setenv("MEMINI_RERANK_PROMPT", "false")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -198,6 +202,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.SweepInterval != 5*time.Minute {
 		t.Errorf("SweepInterval = %v, want 5m", cfg.SweepInterval)
+	}
+	if cfg.RerankPrompt {
+		t.Error("RerankPrompt = true, want false when MEMINI_RERANK_PROMPT=false")
 	}
 	if cfg.DefaultNamespace != "team-a" {
 		t.Errorf("DefaultNamespace = %q, want team-a", cfg.DefaultNamespace)
@@ -513,7 +520,7 @@ var meminiEnvKeys = []string{
 	"MEMINI_WRITE_DEDUP_SCORE", "MEMINI_WRITE_DEDUP_ACTION",
 	"MEMINI_LLM_BASE_URL", "MEMINI_LLM_API_KEY", "MEMINI_LLM_MODEL",
 	"MEMINI_RERANK", "MEMINI_RERANK_MODEL", "MEMINI_RERANK_API_KEY",
-	"MEMINI_RERANK_TIMEOUT", "MEMINI_RERANK_MAX_BATCH_CHARS",
+	"MEMINI_RERANK_TIMEOUT", "MEMINI_RERANK_MAX_BATCH_CHARS", "MEMINI_RERANK_PROMPT",
 	"MEMINI_EMBED_MAX_ITEM_CHARS", "MEMINI_RERANK_MAX_DOC_CHARS", "MEMINI_RERANK_LLM_MAX_DOC_CHARS",
 	"MEMINI_CLASSIFY_MAX_CHARS", "MEMINI_PROMOTE_WHOLE_MAX_CHARS",
 	"MEMINI_CHUNK_EMBED", "MEMINI_CHUNK_SIZE", "MEMINI_CHUNK_OVERLAP",

@@ -74,6 +74,131 @@ func recallIDs(t *testing.T, svc *service.Service) []string {
 	return ids
 }
 
+func TestRecallPromptFastPathSkipsRerankerAndKeepsThreeEligibleResults(t *testing.T) {
+	st := openTestStore(t)
+	rr := &reverseReranker{}
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(),
+		service.WithReranker(rr, "test"), service.WithPromptRerank(false))
+	ingestFruit(t, svc, 3)
+
+	got, err := svc.Recall(context.Background(), service.RecallInput{
+		Namespace: "alice", Query: "fruit", Limit: 3, Source: "prompt",
+	})
+	if err != nil {
+		t.Fatalf("prompt recall: %v", err)
+	}
+	if rr.called {
+		t.Fatal("prompt fast path invoked reranker")
+	}
+	if len(got) != 3 {
+		t.Fatalf("prompt fast path returned %d eligible results, want 3", len(got))
+	}
+}
+
+func TestRecallPromptFastPathPreservesRecallFilters(t *testing.T) {
+	st := openTestStore(t)
+	rr := &reverseReranker{}
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(),
+		service.WithReranker(rr, "test"), service.WithPromptRerank(false))
+	ctx := context.Background()
+	for _, m := range []service.RememberInput{
+		{Namespace: "alice", Content: "fruit keep one", Tier: memory.TierSemantic, Metadata: map[string]any{"session_id": "other"}},
+		{Namespace: "alice", Content: "fruit keep two", Tier: memory.TierSemantic, Metadata: map[string]any{"session_id": "other"}},
+		{Namespace: "alice", Content: "fruit excluded session", Tier: memory.TierSemantic, Metadata: map[string]any{"session_id": "mine"}},
+		{Namespace: "bob", Content: "fruit foreign namespace", Tier: memory.TierSemantic},
+	} {
+		if _, err := svc.Remember(ctx, m); err != nil {
+			t.Fatalf("remember: %v", err)
+		}
+	}
+	all, err := svc.Recall(ctx, service.RecallInput{Namespace: "alice", Query: "fruit", Limit: 10, Source: "prompt"})
+	if err != nil || len(all) < 2 {
+		t.Fatalf("baseline prompt recall: %v, got %d results", err, len(all))
+	}
+	// The two direct matches normalize to 1.0 while the third candidate is
+	// weaker; use a literal floor so this remains independent of tie ordering.
+	floor := 0.75
+
+	var excludedID string
+	for _, r := range all {
+		if r.Memory.Metadata["session_id"] == "other" {
+			excludedID = r.Memory.ID
+			break
+		}
+	}
+	if excludedID == "" {
+		t.Fatal("baseline did not return an ID eligible for exclusion")
+	}
+	got, err := svc.Recall(ctx, service.RecallInput{
+		Namespace: "alice", Query: "fruit", Limit: 10, Source: "prompt",
+		ExcludeIDs: []string{excludedID}, ExcludeMetadata: map[string]string{"session_id": "mine"},
+		MinRankScore: floor,
+	})
+	if err != nil {
+		t.Fatalf("filtered prompt recall: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("filter assertion must exercise at least one retained result")
+	}
+	for _, r := range got {
+		if r.Memory.ID == excludedID || r.Memory.Metadata["session_id"] == "mine" || r.Memory.Namespace != "alice" {
+			t.Fatalf("prompt fast path ignored recall filters: %+v", r)
+		}
+		if r.Score < floor {
+			t.Fatalf("prompt fast path ignored min_rank_score: %v < %v", r.Score, floor)
+		}
+	}
+	if rr.called {
+		t.Fatal("filtered prompt fast path invoked reranker")
+	}
+
+	var omitted int
+	budgeted, err := svc.Recall(ctx, service.RecallInput{
+		Namespace: "alice", Query: "fruit", Limit: 10, Source: "prompt", MaxTokens: 1, Omitted: &omitted,
+	})
+	if err != nil {
+		t.Fatalf("token-budgeted prompt recall: %v", err)
+	}
+	if len(budgeted) != 1 || omitted == 0 {
+		t.Fatalf("prompt fast path must retain token-floor behavior: results=%d omitted=%d", len(budgeted), omitted)
+	}
+}
+
+func TestRecallNonPromptSourcesStillRerankWithPromptFastPath(t *testing.T) {
+	for _, source := range []string{"", "tool", "memory_search", "other", "Prompt"} {
+		t.Run(source, func(t *testing.T) {
+			st := openTestStore(t)
+			rr := &reverseReranker{}
+			svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(),
+				service.WithReranker(rr, "test"), service.WithPromptRerank(false))
+			ingestTwo(t, svc)
+			if _, err := svc.Recall(context.Background(), service.RecallInput{
+				Namespace: "alice", Query: "fruit", Limit: 2, Source: source,
+			}); err != nil {
+				t.Fatalf("non-prompt recall: %v", err)
+			}
+			if !rr.called {
+				t.Fatal("non-prompt recall did not invoke reranker")
+			}
+		})
+	}
+}
+
+func TestRecallPromptRerankDefaultsToExistingBehavior(t *testing.T) {
+	st := openTestStore(t)
+	rr := &reverseReranker{}
+	svc := service.New(st, embedtest.New(dims), service.WithSyncReinforce(), service.WithReranker(rr, "test"))
+	ingestTwo(t, svc)
+	if _, err := svc.Recall(context.Background(), service.RecallInput{
+		Namespace: "alice", Query: "fruit", Limit: 2, Source: "prompt",
+	}); err != nil {
+		t.Fatalf("default prompt recall: %v", err)
+	}
+	if !rr.called {
+		t.Fatal("default prompt recall did not preserve reranking")
+	}
+}
+
 func TestRecallRerankerReordersByVerdict(t *testing.T) {
 	st := openTestStore(t)
 	base := service.New(st, embedtest.New(dims), service.WithSyncReinforce())

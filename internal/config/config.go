@@ -417,6 +417,12 @@ type Config struct {
 	// RerankMaxConcurrency caps in-flight rerank calls. 0 is unbounded. See
 	// EmbedMaxConcurrency for the rationale.
 	RerankMaxConcurrency int `env:"MEMINI_RERANK_MAX_CONCURRENCY" envDefault:"0"`
+	// RerankPrompt controls whether automatic prompt recalls use the configured
+	// reranker. False skips cross-encoder/LLM reranking only for Source="prompt";
+	// explicit and other recall sources retain full reranking. Defaults true to
+	// preserve existing behavior. False also bypasses RerankMinScore for prompt
+	// recalls; the composite min_rank_score floor still applies.
+	RerankPrompt bool `env:"MEMINI_RERANK_PROMPT" envDefault:"true"`
 	// RecallEmbedTimeout bounds the query embed on the recall path; past it, or on
 	// any embed error, recall degrades to keyword-only search instead of stalling
 	// on a slow or stuck embeddings backend. Defaults to 2s so a wedged backend
