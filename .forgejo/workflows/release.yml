@@ -84,7 +84,7 @@ jobs:
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v7
       - name: Install Node.js
-        uses: https://data.forgejo.org/actions/setup-node@v6
+        uses: https://data.forgejo.org/actions/setup-node@v7
         with:
           node-version: "24"
 
@@ -180,7 +180,7 @@ jobs:
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v7
       - name: Install Node.js
-        uses: https://data.forgejo.org/actions/setup-node@v6
+        uses: https://data.forgejo.org/actions/setup-node@v7
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
@@ -214,7 +214,7 @@ jobs:
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v7
       - name: Install Node.js
-        uses: https://data.forgejo.org/actions/setup-node@v6
+        uses: https://data.forgejo.org/actions/setup-node@v7
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
@@ -254,7 +254,7 @@ jobs:
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v7
       - name: Install Node.js
-        uses: https://data.forgejo.org/actions/setup-node@v6
+        uses: https://data.forgejo.org/actions/setup-node@v7
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
