@@ -18,7 +18,7 @@
     "typecheck": "tsc -p tsconfig.test.json"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
+    "@types/node": "^24.13.6",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.0"
   }
