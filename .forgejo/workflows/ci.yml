@@ -101,7 +101,7 @@ jobs:
       - name: Setup Python
         uses: https://data.forgejo.org/actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.14"
 
       # All steps cd with relative paths from the checkout root (the default
       # step cwd). The `working-directory:` key is not used: this runner
