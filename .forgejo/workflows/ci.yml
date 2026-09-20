@@ -30,7 +30,7 @@ jobs:
         uses: https://data.forgejo.org/actions/checkout@v7
 
       - name: Setup Go
-        uses: https://data.forgejo.org/actions/setup-go@v6
+        uses: https://data.forgejo.org/actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -215,7 +215,7 @@ jobs:
         uses: https://data.forgejo.org/actions/checkout@v7
 
       - name: Setup Go
-        uses: https://data.forgejo.org/actions/setup-go@v6
+        uses: https://data.forgejo.org/actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -238,7 +238,7 @@ jobs:
         uses: https://data.forgejo.org/actions/checkout@v7
 
       - name: Setup Go
-        uses: https://data.forgejo.org/actions/setup-go@v6
+        uses: https://data.forgejo.org/actions/setup-go@v7
         with:
           go-version-file: go.mod
 
