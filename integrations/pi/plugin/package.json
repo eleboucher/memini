@@ -23,7 +23,7 @@
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.86.1",
-    "@earendil-works/pi-tui": "0.85.1",
+    "@earendil-works/pi-tui": "0.86.1",
     "@types/node": "^24.13.6",
     "esbuild": "^0.28.2",
     "tsx": "^4.23.13",
