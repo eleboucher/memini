@@ -91,7 +91,7 @@ jobs:
         uses: https://data.forgejo.org/actions/checkout@v7
 
       - name: Setup Node
-        uses: https://data.forgejo.org/actions/setup-node@v6
+        uses: https://data.forgejo.org/actions/setup-node@v7
         with:
           node-version: "24"
 
