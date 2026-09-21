@@ -23,7 +23,7 @@
     "esbuild": "^0.28.2",
     "openclaw": "latest",
     "tsx": "^4.23.15",
-    "typescript": "^7.0.2"
+    "typescript": "^5.9.3"
   },
   "peerDependencies": {
     "openclaw": ">=2026.9.5"
