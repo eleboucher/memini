@@ -15,8 +15,8 @@ importers:
         specifier: ^3.0.0
         version: 3.0.0
       force-graph:
-        specifier: ^1.51.4
-        version: 1.51.4(preact-render-to-string@6.7.0)
+        specifier: ^1.52.0
+        version: 1.52.0(preact-render-to-string@6.7.0)
       preact:
         specifier: ^10.29.8
         version: 10.29.8(preact-render-to-string@6.7.0)
@@ -526,8 +526,8 @@ packages:
     resolution: {integrity: sha512-/kXzuDnnBqyyWyhDMH7+PfP8J/oXiAavGzcRxASOMRHFuReDtofizLLJsf7nnDLAfEaMW4pVWaXrAjtnglpEkg==}
     engines: {node: '>=12'}
 
-  force-graph@1.51.4:
-    resolution: {integrity: sha512-TdJ2KbkoiDQ7NIRx8IPGD0mAXXpLhamS7c+b7W98b0MHG7lphnda1VOQX/98UDTsttIAdH4TcP0l0MauSnLK8w==}
+  force-graph@1.52.0:
+    resolution: {integrity: sha512-0fpxrZzW6qwm9zM7wgh54d7GbxQfQSDV71I0apo+75PVYQPpPHGVPQFLsE9WAu+hOS4VdLd53g0Hua/bxDJKSg==}
     engines: {node: '>=12'}
 
   fsevents@2.3.3:
@@ -1346,7 +1346,7 @@ snapshots:
     transitivePeerDependencies:
       - preact-render-to-string
 
-  force-graph@1.51.4(preact-render-to-string@6.7.0):
+  force-graph@1.52.0(preact-render-to-string@6.7.0):
     dependencies:
       '@tweenjs/tween.js': 25.0.0
       accessor-fn: 1.5.3

@@ -14,7 +14,7 @@
   "dependencies": {
     "@preact/signals": "^2.11.2",
     "d3-force": "^3.0.0",
-    "force-graph": "^1.51.4",
+    "force-graph": "^1.52.0",
     "preact": "^10.29.8",
     "preact-iso": "^2.12.2"
   },
