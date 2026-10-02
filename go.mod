@@ -3,7 +3,7 @@ module github.com/eleboucher/memini
 go 1.27.1
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.74.0
+	github.com/anthropics/anthropic-sdk-go v1.78.0
 	github.com/asg017/sqlite-vec-go-bindings v0.1.6
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/go-chi/chi/v5 v5.3.2
@@ -16,7 +16,7 @@ require (
 	// by the sqlite-vec-go-bindings embedded wasm. See .renovaterc.json5.
 	github.com/ncruces/go-sqlite3 v0.21.2
 	github.com/oapi-codegen/runtime v1.7.0
-	github.com/openai/openai-go/v3 v3.64.0
+	github.com/openai/openai-go/v3 v3.71.1
 	github.com/pgvector/pgvector-go v0.4.1
 	github.com/pgvector/pgvector-go/pgx v0.4.1
 	github.com/prometheus/client_golang v1.24.1
@@ -71,7 +71,7 @@ require (
 	golang.org/x/mod v0.38.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/tools v0.48.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
