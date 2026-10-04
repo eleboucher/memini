@@ -118,6 +118,7 @@ var groups = []group{
 			"MEMINI_LLM_API",
 			"MEMINI_LLM_MAX_TOKENS",
 			"MEMINI_LLM_EXTRA_BODY",
+			"MEMINI_LLM_EXTRA_HEADERS",
 		},
 	},
 	{

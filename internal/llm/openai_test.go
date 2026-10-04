@@ -340,3 +340,27 @@ func TestOpenAIExtraBodyMergedIntoRequest(t *testing.T) {
 		t.Fatalf("client-set field lost: model=%v", got["model"])
 	}
 }
+
+func TestOpenAIExtraHeadersSentOnRequest(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+
+	c, err := llm.NewOpenAI(llm.Config{
+		BaseURL: srv.URL, Model: "m",
+		ExtraHeaders: map[string]string{"x-opencode-session": "memini"},
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if _, err := c.Complete(context.Background(), "sys", "user"); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if got.Get("x-opencode-session") != "memini" {
+		t.Fatalf("x-opencode-session not sent on request: %v", got)
+	}
+}

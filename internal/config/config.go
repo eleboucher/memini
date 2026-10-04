@@ -345,6 +345,15 @@ type Config struct {
 	// itself (model, messages, temperature, max_tokens) always win. Invalid
 	// JSON fails config loading.
 	LLMExtraBody string `env:"MEMINI_LLM_EXTRA_BODY"`
+	// LLMExtraHeaders is a JSON object of HTTP headers added to every LLM
+	// request, for gateway-specific headers memini deliberately does not
+	// model. Typical use: OpenCode Go's routing header
+	// ('{"x-opencode-session":"memini"}'), which the gateway requires and uses
+	// to shard routing and prompt caching. Keep values stable across calls
+	// and restarts — a gateway that shards on a header punishes churning
+	// values with cache misses. Invalid JSON, a non-object, or a non-string
+	// value fails config loading.
+	LLMExtraHeaders string `env:"MEMINI_LLM_EXTRA_HEADERS"`
 
 	// Rerank selects recall reranking: "off" (default), "llm" (reorder with the
 	// chat LLM), or a cross-encoder /rerank base URL (e.g. http://host:8002/v1).
@@ -1121,6 +1130,9 @@ func (c *Config) validateLLM() error {
 	if _, err := c.LLMExtraBodyMap(); err != nil {
 		return err
 	}
+	if _, err := c.LLMExtraHeadersMap(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1308,6 +1320,26 @@ func (c *Config) LLMExtraBodyMap() (map[string]json.RawMessage, error) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		return nil, fmt.Errorf("MEMINI_LLM_EXTRA_BODY: invalid JSON object: %w", err)
+	}
+	return m, nil
+}
+
+// LLMExtraHeadersMap parses LLMExtraHeaders into the HTTP headers to add to
+// every chat request, or nil when unset. A non-object, invalid JSON, or a
+// non-string value is a configuration error.
+func (c *Config) LLMExtraHeadersMap() (map[string]string, error) {
+	raw := strings.TrimSpace(c.LLMExtraHeaders)
+	if raw == "" {
+		return nil, nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return nil, fmt.Errorf("MEMINI_LLM_EXTRA_HEADERS: invalid JSON object of string values: %w", err)
+	}
+	for name := range m {
+		if strings.TrimSpace(name) == "" {
+			return nil, fmt.Errorf("MEMINI_LLM_EXTRA_HEADERS: header name must not be empty")
+		}
 	}
 	return m, nil
 }

@@ -39,6 +39,9 @@ func NewOpenAI(cfg Config) (*OpenAIClient, error) {
 	for key, raw := range cfg.ExtraBody {
 		extra = append(extra, option.WithJSONSet(key, raw))
 	}
+	for key, value := range cfg.ExtraHeaders {
+		extra = append(extra, option.WithHeader(key, value))
+	}
 	return &OpenAIClient{
 		client:    openai.NewClient(opts...),
 		model:     cfg.Model,

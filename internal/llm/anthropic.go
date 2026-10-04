@@ -42,6 +42,9 @@ func NewAnthropic(cfg Config) (*AnthropicClient, error) {
 	for key, raw := range cfg.ExtraBody {
 		extra = append(extra, option.WithJSONSet(key, raw))
 	}
+	for key, value := range cfg.ExtraHeaders {
+		extra = append(extra, option.WithHeader(key, value))
+	}
 	return &AnthropicClient{
 		client:    anthropic.NewClient(opts...),
 		extra:     extra,

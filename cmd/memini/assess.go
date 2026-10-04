@@ -102,12 +102,17 @@ func runAssess(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	extraHeaders, err := cfg.LLMExtraHeadersMap()
+	if err != nil {
+		return err
+	}
 	client, err := llm.New(llm.API(cfg.LLMAPI), llm.Config{
-		BaseURL:   cfg.LLMBaseURL,
-		APIKey:    cfg.LLMAPIKey,
-		Model:     cfg.LLMModel,
-		MaxTokens: cfg.LLMMaxTokens,
-		ExtraBody: extraBody,
+		BaseURL:      cfg.LLMBaseURL,
+		APIKey:       cfg.LLMAPIKey,
+		Model:        cfg.LLMModel,
+		MaxTokens:    cfg.LLMMaxTokens,
+		ExtraBody:    extraBody,
+		ExtraHeaders: extraHeaders,
 	})
 	if err != nil {
 		return err

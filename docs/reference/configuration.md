@@ -62,6 +62,7 @@ server deployment. Treat the rest as tuning you reach for when you have a reason
 | [`MEMINI_LLM_API`](#memini_llm_api) | `openai` | [LLM (optional)](#llm-optional) |
 | [`MEMINI_LLM_MAX_TOKENS`](#memini_llm_max_tokens) | `0` | [LLM (optional)](#llm-optional) |
 | [`MEMINI_LLM_EXTRA_BODY`](#memini_llm_extra_body) | none | [LLM (optional)](#llm-optional) |
+| [`MEMINI_LLM_EXTRA_HEADERS`](#memini_llm_extra_headers) | none | [LLM (optional)](#llm-optional) |
 | [`MEMINI_RERANK`](#memini_rerank) | `off` | [Reranking](#reranking) |
 | [`MEMINI_RERANK_MODEL`](#memini_rerank_model) | none | [Reranking](#reranking) |
 | [`MEMINI_RERANK_API_KEY`](#memini_rerank_api_key) | none | [Reranking](#reranking) |
@@ -363,6 +364,12 @@ int, default `0`. Set by `Config.LLMMaxTokens`.
 string, default none. Set by `Config.LLMExtraBody`.
 
 `MEMINI_LLM_EXTRA_BODY` is a JSON object merged into every chat request body at the top level, for provider-specific dialect knobs memini deliberately does not model. Typical use: disabling hidden reasoning on DeepSeek-style endpoints ('{"thinking":{"type":"disabled"}}') or Qwen-style ones ('{"enable_thinking":false}'). Fields memini sets itself (model, messages, temperature, max_tokens) always win. Invalid JSON fails config loading.
+
+### `MEMINI_LLM_EXTRA_HEADERS`
+
+string, default none. Set by `Config.LLMExtraHeaders`.
+
+`MEMINI_LLM_EXTRA_HEADERS` is a JSON object of HTTP headers added to every LLM request, for gateway-specific headers memini deliberately does not model. Typical use: OpenCode Go's routing header ('{"x-opencode-session":"memini"}'), which the gateway requires and uses to shard routing and prompt caching. Keep values stable across calls and restarts — a gateway that shards on a header punishes churning values with cache misses. Invalid JSON, a non-object, or a non-string value fails config loading.
 
 ## Reranking
 
