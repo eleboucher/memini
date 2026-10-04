@@ -4,6 +4,10 @@
 # Default backend is sqlite: a single-replica StatefulSet with a PVC at /data.
 # To run the scale-out postgres backend instead, see the commented "postgres
 # backend" notes against controllers.main below and on the MEMINI_* env keys.
+
+# -- Optional cluster DNS domain appended after `.svc` in in-cluster URLs built
+# by the chart (e.g. `cluster.local`). Empty keeps the short `<svc>.<ns>.svc` form.
+clusterDomain: ""
 controllers:
   main:
     # -- Controller type. `statefulset` for the default sqlite backend (PVC at
@@ -255,10 +259,20 @@ controllers:
           - /bin/sh
           - -c
           - >-
-            curl -sf -X POST --variable "MEMINI_API_KEY=$MEMINI_API_KEY" --expand-header "Authorization: Bearer {{MEMINI_API_KEY}}" http://memini:8080/v1/fsck
-        # -- Provide the bearer token to the curl --variable above. Point at the
-        # same Secret as the main container's MEMINI_API_KEY.
-        # env:
+            curl -sf -X POST --variable "MEMINI_API_KEY=$MEMINI_API_KEY" --expand-header "Authorization: Bearer {{MEMINI_API_KEY}}" "$MEMINI_URL/v1/fsck"
+        env:
+          POD_NAMESPACE:
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          # -- In-cluster URL of the memini Service: rendered Service name +
+          # release namespace + `.svc` + optional `clusterDomain`.
+          MEMINI_URL:
+            dependsOn: POD_NAMESPACE
+            value: http://{{ include "bjw-s.common.lib.chart.names.fullname" . }}.$(POD_NAMESPACE).svc{{ with .Values.clusterDomain }}.{{ . }}{{ end }}:8080
+        # -- Provide the bearer token to the curl --variable above by adding
+        # MEMINI_API_KEY to env, pointing at the same Secret as the main
+        # container's MEMINI_API_KEY.
         #   MEMINI_API_KEY:
         #     valueFrom:
         #       secretKeyRef:
