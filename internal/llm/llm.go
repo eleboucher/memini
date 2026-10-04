@@ -162,8 +162,15 @@ type Config struct {
 	// Qwen-style ones ({"enable_thinking":false}). Keys set here override
 	// nothing: fields the client sets explicitly (model, messages,
 	// temperature, max_tokens) win.
-	ExtraBody  map[string]json.RawMessage
-	HTTPClient *http.Client
+	ExtraBody map[string]json.RawMessage
+	// ExtraHeaders are HTTP headers added to every chat request, for
+	// gateway-specific routing/attribution headers this client deliberately
+	// does not model — e.g. OpenCode Go's x-opencode-session, which the
+	// gateway requires and uses to shard routing and prompt caching. Values
+	// should stay stable across calls; see Config.ExtraBody for the body
+	// counterpart.
+	ExtraHeaders map[string]string
+	HTTPClient   *http.Client
 }
 
 // OpenAIConfig and AnthropicConfig are aliases kept for call-site clarity.

@@ -459,6 +459,17 @@ func TestLoadValidationErrors(t *testing.T) {
 			name: "negative recall importance reserve",
 			env:  map[string]string{"MEMINI_RECALL_IMPORTANCE_RESERVE": "-1"},
 		},
+		// Extra LLM headers: a broken JSON object or a non-string value would
+		// otherwise surface only as a per-request failure against the gateway,
+		// which is much harder to trace back to the env var.
+		{
+			name: "llm extra headers invalid json",
+			env:  map[string]string{"MEMINI_LLM_EXTRA_HEADERS": "{x-opencode-session}"},
+		},
+		{
+			name: "llm extra headers non-string value",
+			env:  map[string]string{"MEMINI_LLM_EXTRA_HEADERS": "{\"x-opencode-session\":42}"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -876,5 +887,31 @@ func TestClientTimeoutDefaultExceedsRerankTimeout(t *testing.T) {
 			"server's own rerank deadline never receives the composite-order fallback, "+
 			"so a slow reranker returns nothing at all instead of unranked results",
 			clientTimeout, cfg.RerankTimeout)
+	}
+}
+
+// TestLLMExtraHeadersMap covers the parser directly: unset stays nil, a valid
+// object parses, and the empty-name guard fires.
+func TestLLMExtraHeadersMap(t *testing.T) {
+	clearMeminiEnv(t)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if m, err := cfg.LLMExtraHeadersMap(); err != nil || m != nil {
+		t.Fatalf("unset: got (%v, %v), want (nil, nil)", m, err)
+	}
+
+	t.Setenv("MEMINI_LLM_EXTRA_HEADERS", `{"x-opencode-session":"memini","x-tenant":"lab"}`)
+	cfg, err = config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	m, err := cfg.LLMExtraHeadersMap()
+	if err != nil {
+		t.Fatalf("valid object: %v", err)
+	}
+	if m["x-opencode-session"] != "memini" || m["x-tenant"] != "lab" || len(m) != 2 {
+		t.Fatalf("valid object parsed wrong: %v", m)
 	}
 }

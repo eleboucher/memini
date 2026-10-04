@@ -286,9 +286,14 @@ func buildServiceStack(
 			_ = st.Close()
 			return nil, nil, nil, nil, nil, err
 		}
+		extraHeaders, err := cfg.LLMExtraHeadersMap()
+		if err != nil {
+			_ = st.Close()
+			return nil, nil, nil, nil, nil, err
+		}
 		client, err := llm.New(llm.API(cfg.LLMAPI), llm.Config{
 			BaseURL: cfg.LLMBaseURL, APIKey: cfg.LLMAPIKey, Model: cfg.LLMModel,
-			MaxTokens: cfg.LLMMaxTokens, ExtraBody: extraBody,
+			MaxTokens: cfg.LLMMaxTokens, ExtraBody: extraBody, ExtraHeaders: extraHeaders,
 		})
 		if err != nil {
 			_ = st.Close()
