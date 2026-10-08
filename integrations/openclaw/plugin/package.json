@@ -26,7 +26,7 @@
     "typescript": "^5.9.3"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.9.5"
+    "openclaw": ">=2026.9.9"
   },
   "openclaw": {
     "extensions": [
