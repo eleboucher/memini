@@ -396,9 +396,9 @@ checksum = "sha256:f9683a19877e12a9b167305c8db71040d812876359de21f0d2e97c3f321f8
 url = "https://nodejs.org/dist/v24.22.0/node-v24.22.0-win-x64.zip"
 
 [[tools.oxfmt]]
-version = "0.72.0"
+version = "0.73.0"
 backend = "npm:oxfmt"
-specifiers = ["0.72.0"]
+specifiers = ["0.73.0"]
 
 [[tools.stern]]
 version = "1.34.0"
