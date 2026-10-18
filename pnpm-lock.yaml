@@ -36,8 +36,8 @@ importers:
         specifier: 1.3.0
         version: 1.3.0(@aws-sdk/credential-provider-node@3.972.83)(@modelcontextprotocol/sdk@1.31.0(supports-color@10.2.2)(zod@4.6.5))(@smithy/signature-v4@5.7.3)(supports-color@10.2.2)(ws@8.21.3)(zod@4.6.5)
       '@earendil-works/pi-tui':
-        specifier: 1.2.0
-        version: 1.2.0
+        specifier: 1.3.0
+        version: 1.3.0
       '@types/node':
         specifier: ^24.19.2
         version: 24.19.2
@@ -251,10 +251,6 @@ packages:
 
   '@earendil-works/pi-tui@0.86.1':
     resolution: {integrity: sha512-FU/zU/zG4RWokcZt+BVXXcieWi5ggvYnWP2kkB5XXjMaHRoy5BDhcZJ9JAnLTN9MwrCRoXgPQxOI0bFqwYeZkQ==}
-    engines: {node: '>=22.19.0'}
-
-  '@earendil-works/pi-tui@1.2.0':
-    resolution: {integrity: sha512-OdJCiYklkL3TqmdmGKUflHoLy9zw18GBYO0DPASZvGlP4RkDXAZzLLDt7cidJ6wUR7DBrKb13rrekDsXgMF60g==}
     engines: {node: '>=22.19.0'}
 
   '@earendil-works/pi-tui@1.3.0':
@@ -2642,11 +2638,6 @@ snapshots:
   '@earendil-works/pi-telemetry@1.3.0': {}
 
   '@earendil-works/pi-tui@0.86.1':
-    dependencies:
-      get-east-asian-width: 1.6.0
-      marked: 18.0.11
-
-  '@earendil-works/pi-tui@1.2.0':
     dependencies:
       get-east-asian-width: 1.6.0
       marked: 18.0.11
