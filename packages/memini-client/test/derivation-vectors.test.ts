@@ -4,7 +4,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { deriveLocalNamespace, repoNameFromRemote, repoSlugFromRemote, type LocalSource } from "../src/resolve.js";
+import {
+  deriveLocalNamespace,
+  repoNameFromRemote,
+  repoPathFromRemote,
+  repoSlugFromRemote,
+  type LocalSource,
+} from "../src/resolve.js";
 import type { ProjectFacts } from "../src/facts.js";
 
 // This fixture is the shared contract the actual derivation logic is built
@@ -114,7 +120,7 @@ test("deriveLocalNamespace matches every derivation case in the fixture", () => 
       env_namespace: rawFacts.env_namespace,
       declared_namespace: rawFacts.declared_namespace,
     };
-    const scope = c.scope === "owner_repo" ? "owner_repo" : "repo";
+    const scope = c.scope === "owner_repo" || c.scope === "owner_tree" ? c.scope : "repo";
 
     const got = deriveLocalNamespace(facts, scope);
     assert.equal(got.namespace, c.expect.namespace, `${c.name}: namespace`);
@@ -122,17 +128,29 @@ test("deriveLocalNamespace matches every derivation case in the fixture", () => 
   }
 });
 
-test("repoNameFromRemote/repoSlugFromRemote match the remote-sourced fixture cases directly", () => {
+test("repoNameFromRemote/repoSlugFromRemote/repoPathFromRemote match the remote-sourced fixture cases directly", () => {
   const data = loadFixture();
   for (const c of data.derivation) {
     if (c.expect.source !== "remote") continue;
     const remote = (c.facts as { remote_url?: string }).remote_url;
-    const scope = c.scope === "owner_repo" ? "owner_repo" : "repo";
-    const got = scope === "owner_repo" ? repoSlugFromRemote(remote) : repoNameFromRemote(remote);
+    const got =
+      c.scope === "owner_repo"
+        ? repoSlugFromRemote(remote)
+        : c.scope === "owner_tree"
+          ? repoPathFromRemote(remote)
+          : repoNameFromRemote(remote);
     // The fixture's expected namespace may carry an agent suffix
-    // ("phoenix/reviewer"); the bare remote-derived name is always its
-    // first path segment.
-    const base = c.expect.namespace.split("/")[0];
+    // ("phoenix/reviewer"), sanitized as withAgent does; the remote-derived
+    // name is what remains once it is stripped. Its depth is not fixed: an
+    // owner_tree name falls back to the bare repo name without a usable owner.
+    const agent = ((c.facts as { agent?: string }).agent || "")
+      .trim()
+      .replace(/[^A-Za-z0-9._-]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    const base =
+      agent && c.expect.namespace.endsWith(`/${agent}`)
+        ? c.expect.namespace.slice(0, -(agent.length + 1))
+        : c.expect.namespace;
     assert.equal(got, base, `${c.name}: remote-derived base name`);
   }
 });

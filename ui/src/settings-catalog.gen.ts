@@ -232,10 +232,11 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
     "key": "namespace_scope",
     "type": "string",
     "default": "repo",
-    "description": "\"repo\" derives the namespace from the bare repo name; \"owner_repo\" disambiguates same-named repos across owners with an owner-repo slug (owner + \"-\" + repo).",
+    "description": "\"repo\" derives the namespace from the bare repo name; \"owner_repo\" disambiguates same-named repos across owners with an owner-repo slug (owner + \"-\" + repo); \"owner_tree\" nests the repo under its owner (owner + \"/\" + repo), so the owner is an ancestor namespace shared by all of its repos.",
     "enum": [
       "repo",
-      "owner_repo"
+      "owner_repo",
+      "owner_tree"
     ]
   },
   {

@@ -100,6 +100,69 @@
       "source": "plugin/scripts/_shared.mjs:62 sanitizes only the owner segment's special characters ([^A-Za-z0-9._-]+ -> '-'); it does not lowercase either segment"
     },
     {
+      "name": "owner-tree scope nests the repo under its owner (https remote)",
+      "facts": { "remote_url": "https://github.com/acme/phoenix.git" },
+      "scope": "owner_tree",
+      "expect": { "namespace": "acme/phoenix", "source": "remote" },
+      "source": "internal/nsresolve/remote.go repoPathFromRemote; packages/memini-client/src/resolve.ts repoPathFromRemote"
+    },
+    {
+      "name": "owner-tree scope from scp-style remote",
+      "facts": { "remote_url": "git@github.com:acme/phoenix.git" },
+      "scope": "owner_tree",
+      "expect": { "namespace": "acme/phoenix", "source": "remote" },
+      "source": "repoPathFromRemote; same segments as the owner-repo slug, joined with '/'"
+    },
+    {
+      "name": "owner-tree scope from ssh:// remote with port (port/user never enter the path)",
+      "facts": { "remote_url": "ssh://user@host:2222/x/repo.git" },
+      "scope": "owner_tree",
+      "expect": { "namespace": "x/repo", "source": "remote" },
+      "source": "repoPathFromRemote; the host lands in discarded leading segments"
+    },
+    {
+      "name": "owner-tree scope preserves case in both segments",
+      "facts": { "remote_url": "git@github.com:Acme/Phoenix.git" },
+      "scope": "owner_tree",
+      "expect": { "namespace": "Acme/Phoenix", "source": "remote" },
+      "source": "repoPathFromRemote; no case folding, like the owner-repo slug"
+    },
+    {
+      "name": "owner-tree scope sanitizes the owner segment (sourcehut ~user)",
+      "facts": { "remote_url": "https://git.sr.ht/~acme/phoenix" },
+      "scope": "owner_tree",
+      "expect": { "namespace": "acme/phoenix", "source": "remote" },
+      "source": "repoPathFromRemote; the owner is sanitized ([^A-Za-z0-9._-]+ -> '-', trimmed) like the owner-repo slug"
+    },
+    {
+      "name": "owner-tree scope keeps only the last two segments of a nested group",
+      "facts": { "remote_url": "https://gitlab.com/group/subgroup/phoenix.git" },
+      "scope": "owner_tree",
+      "expect": { "namespace": "subgroup/phoenix", "source": "remote" },
+      "source": "repoPathFromRemote; reads the same last two segments as the owner-repo slug"
+    },
+    {
+      "name": "owner-tree scope with an agent suffix nests the agent under the repo",
+      "facts": { "remote_url": "https://github.com/acme/phoenix.git", "agent": "reviewer" },
+      "scope": "owner_tree",
+      "expect": { "namespace": "acme/phoenix/reviewer", "source": "remote" },
+      "source": "repoPathFromRemote + withAgent"
+    },
+    {
+      "name": "owner-tree scope falls back to the bare repo name when the owner sanitizes to nothing (scp-style ~/ path)",
+      "facts": { "remote_url": "git@host:~/phoenix.git", "agent": "reviewer" },
+      "scope": "owner_tree",
+      "expect": { "namespace": "phoenix/reviewer", "source": "remote" },
+      "source": "repoPathFromRemote; the owner '~' sanitizes to '', leaving only the repo, then withAgent"
+    },
+    {
+      "name": "owner-tree scope falls back to the bare repo name for a single-segment remote",
+      "facts": { "remote_url": "phoenix.git", "agent": "reviewer" },
+      "scope": "owner_tree",
+      "expect": { "namespace": "phoenix/reviewer", "source": "remote" },
+      "source": "repoPathFromRemote; one path segment has no owner, then withAgent"
+    },
+    {
       "name": "no remote falls back to toplevel_basename",
       "facts": { "toplevel_basename": "phoenix-worktree", "cwd_basename": "ignored-cwd" },
       "scope": "repo",

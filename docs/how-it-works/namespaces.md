@@ -23,7 +23,7 @@ The client-side resolution chain, highest precedence first:
 1. **Pin** — an operator-created project-to-namespace binding, stored on the server. Beats everything below, including the environment.
 2. **`MEMINI_NAMESPACE`** — the client's environment override.
 3. **Declared** — a namespace a gateway or CI caller states outright.
-4. **Derived** — from the project itself: the git remote's repo name (or an `owner-repo` slug under the `namespace_scope=owner_repo` setting), else the git toplevel directory's basename, else the working directory's basename. Only a _derived_ name is then decorated: the configured namespace prefix is prepended and the `MEMINI_AGENT` segment appended. A pinned, env, or declared namespace is used verbatim — no prefix, no agent suffix.
+4. **Derived** — from the project itself: the git remote's repo name (or an `owner-repo` slug under the `namespace_scope=owner_repo` setting, or an `owner/repo` path under `namespace_scope=owner_tree`, which makes the owner an ancestor every repo under it reads through the [cascade](../scopes.md)), else the git toplevel directory's basename, else the working directory's basename. Only a _derived_ name is then decorated: the configured namespace prefix is prepended and the `MEMINI_AGENT` segment appended. A pinned, env, or declared namespace is used verbatim — no prefix, no agent suffix.
 5. **Key default** — the API key's bound default namespace.
 6. **Server default** — the last resort.
 

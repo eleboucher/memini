@@ -121,6 +121,7 @@ func (e ClientSettingsInjectLabels) Valid() bool {
 // Defines values for ClientSettingsNamespaceScope.
 const (
 	ClientSettingsNamespaceScopeOwnerRepo ClientSettingsNamespaceScope = "owner_repo"
+	ClientSettingsNamespaceScopeOwnerTree ClientSettingsNamespaceScope = "owner_tree"
 	ClientSettingsNamespaceScopeRepo      ClientSettingsNamespaceScope = "repo"
 )
 
@@ -128,6 +129,8 @@ const (
 func (e ClientSettingsNamespaceScope) Valid() bool {
 	switch e {
 	case ClientSettingsNamespaceScopeOwnerRepo:
+		return true
+	case ClientSettingsNamespaceScopeOwnerTree:
 		return true
 	case ClientSettingsNamespaceScopeRepo:
 		return true
@@ -439,6 +442,7 @@ func (e SettingsDefaultsResponseManagedBy) Valid() bool {
 // Defines values for SettingsDefaultsResponseNamespaceScope.
 const (
 	SettingsDefaultsResponseNamespaceScopeOwnerRepo SettingsDefaultsResponseNamespaceScope = "owner_repo"
+	SettingsDefaultsResponseNamespaceScopeOwnerTree SettingsDefaultsResponseNamespaceScope = "owner_tree"
 	SettingsDefaultsResponseNamespaceScopeRepo      SettingsDefaultsResponseNamespaceScope = "repo"
 )
 
@@ -446,6 +450,8 @@ const (
 func (e SettingsDefaultsResponseNamespaceScope) Valid() bool {
 	switch e {
 	case SettingsDefaultsResponseNamespaceScopeOwnerRepo:
+		return true
+	case SettingsDefaultsResponseNamespaceScopeOwnerTree:
 		return true
 	case SettingsDefaultsResponseNamespaceScopeRepo:
 		return true
@@ -905,7 +911,7 @@ type ClientSettings struct {
 	// NamespacePrefix Namespace path prepended ahead of the derived/declared namespace.
 	NamespacePrefix *string `json:"namespace_prefix,omitempty"`
 
-	// NamespaceScope "repo" derives the namespace from the bare repo name; "owner_repo" disambiguates same-named repos across owners with an owner-repo slug (owner + "-" + repo).
+	// NamespaceScope "repo" derives the namespace from the bare repo name; "owner_repo" disambiguates same-named repos across owners with an owner-repo slug (owner + "-" + repo); "owner_tree" nests the repo under its owner (owner + "/" + repo), so the owner is an ancestor namespace shared by all of its repos.
 	NamespaceScope *ClientSettingsNamespaceScope `json:"namespace_scope,omitempty"`
 
 	// Recall Enable recall-driven injection at all.
@@ -924,7 +930,7 @@ type ClientSettings struct {
 // ClientSettingsInjectLabels defines model for ClientSettings.InjectLabels.
 type ClientSettingsInjectLabels string
 
-// ClientSettingsNamespaceScope "repo" derives the namespace from the bare repo name; "owner_repo" disambiguates same-named repos across owners with an owner-repo slug (owner + "-" + repo).
+// ClientSettingsNamespaceScope "repo" derives the namespace from the bare repo name; "owner_repo" disambiguates same-named repos across owners with an owner-repo slug (owner + "-" + repo); "owner_tree" nests the repo under its owner (owner + "/" + repo), so the owner is an ancestor namespace shared by all of its repos.
 type ClientSettingsNamespaceScope string
 
 // ClusterAction defines model for ClusterAction.
@@ -1546,7 +1552,7 @@ type SettingsDefaultsResponse struct {
 	// NamespacePrefix Namespace path prepended ahead of the derived/declared namespace.
 	NamespacePrefix *string `json:"namespace_prefix,omitempty"`
 
-	// NamespaceScope "repo" derives the namespace from the bare repo name; "owner_repo" disambiguates same-named repos across owners with an owner-repo slug (owner + "-" + repo).
+	// NamespaceScope "repo" derives the namespace from the bare repo name; "owner_repo" disambiguates same-named repos across owners with an owner-repo slug (owner + "-" + repo); "owner_tree" nests the repo under its owner (owner + "/" + repo), so the owner is an ancestor namespace shared by all of its repos.
 	NamespaceScope *SettingsDefaultsResponseNamespaceScope `json:"namespace_scope,omitempty"`
 
 	// Recall Enable recall-driven injection at all.
@@ -1568,7 +1574,7 @@ type SettingsDefaultsResponseInjectLabels string
 // SettingsDefaultsResponseManagedBy "api" means the layer is stored in the server's KV store and editable via PUT /v1/settings/defaults; "env" means it is pinned by the MEMINI_CLIENT_DEFAULTS environment variable, and PUT is refused with 409.
 type SettingsDefaultsResponseManagedBy string
 
-// SettingsDefaultsResponseNamespaceScope "repo" derives the namespace from the bare repo name; "owner_repo" disambiguates same-named repos across owners with an owner-repo slug (owner + "-" + repo).
+// SettingsDefaultsResponseNamespaceScope "repo" derives the namespace from the bare repo name; "owner_repo" disambiguates same-named repos across owners with an owner-repo slug (owner + "-" + repo); "owner_tree" nests the repo under its owner (owner + "/" + repo), so the owner is an ancestor namespace shared by all of its repos.
 type SettingsDefaultsResponseNamespaceScope string
 
 // Stats defines model for Stats.
