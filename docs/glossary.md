@@ -88,7 +88,7 @@ every deployed client to close a gap that isn't there.
 
 ## The one legacy exception: `namespace_scope`
 
-The per-key setting `namespace_scope` (`repo` | `owner_repo`) predates this
+The per-key setting `namespace_scope` (`repo` | `owner_repo` | `owner_tree`) predates this
 glossary and has nothing to do with read width — it selects the slug style
 used when deriving a namespace from a git remote. It stays as-is: it is
 persisted in per-key settings and operator-authored key files, and renaming

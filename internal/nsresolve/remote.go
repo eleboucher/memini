@@ -93,6 +93,21 @@ func repoNameFromRemote(url string) string {
 // plugin/scripts/_shared.mjs:58-65 (repoSlugFromRemote) — the repo segment and
 // the owner's case are left untouched.
 func repoSlugFromRemote(url string) string {
+	return joinOwnerRepo(url, "-")
+}
+
+// repoPathFromRemote returns an "owner/repo" path: the same segments and
+// sanitization as repoSlugFromRemote, joined with "/" so the owner is a parent
+// namespace that every repo under it reads through the ancestor cascade.
+// Mirrors packages/memini-client/src/resolve.ts (repoPathFromRemote).
+func repoPathFromRemote(url string) string {
+	return joinOwnerRepo(url, "/")
+}
+
+// joinOwnerRepo joins the sanitized owner and the repo (the last two path
+// segments) with sep. It returns the bare repo name when only one segment is
+// present or the owner sanitizes to nothing, and "" when unparseable.
+func joinOwnerRepo(url, sep string) string {
 	segs := remotePathSegments(url)
 	if len(segs) == 0 {
 		return ""
@@ -105,7 +120,7 @@ func repoSlugFromRemote(url string) string {
 	if owner == "" {
 		return repo
 	}
-	return owner + "-" + repo
+	return owner + sep + repo
 }
 
 // CanonicalRemote reduces a raw git remote URL to a stable, credential-free

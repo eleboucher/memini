@@ -35,6 +35,10 @@ const (
 // enum (api/openapi.yaml).
 const scopeOwnerRepo = "owner_repo"
 
+// scopeOwnerTree is the namespace_scope value that derives an "owner/repo" path,
+// nesting the repo under its owner in the namespace tree.
+const scopeOwnerTree = "owner_tree"
+
 // Facts is what a client knows about its project and itself at handshake time.
 // Every field is optional except that a usable resolution needs at least a
 // cwd_basename (the last-resort derivation fallback). Raw, unnormalized values
@@ -78,8 +82,9 @@ type PinLookup func(ctx context.Context, keys []string) (namespace string, key s
 //  1. pin           — an operator-created pin for this project.
 //  2. env           — the client's MEMINI_NAMESPACE.
 //  3. declared      — a namespace a gateway/CI caller stated outright.
-//  4. derive        — from the git remote (repo name, or owner-repo slug under
-//     namespace_scope=owner_repo), else the toplevel basename, else the cwd
+//  4. derive        — from the git remote (repo name, owner-repo slug under
+//     namespace_scope=owner_repo, or owner/repo path under
+//     namespace_scope=owner_tree), else the toplevel basename, else the cwd
 //     basename; then namespace_prefix is prepended and the agent suffix
 //     appended.
 //  5. key-default   — the caller's per-key default namespace.
@@ -164,9 +169,12 @@ func Resolve(ctx context.Context, f Facts, pins PinLookup, s store.ClientSetting
 func derive(f Facts, s store.ClientSettings) (base, source, fact string) {
 	if f.RemoteURL != "" {
 		var name string
-		if scope(s) == scopeOwnerRepo {
+		switch scope(s) {
+		case scopeOwnerRepo:
 			name = repoSlugFromRemote(f.RemoteURL)
-		} else {
+		case scopeOwnerTree:
+			name = repoPathFromRemote(f.RemoteURL)
+		default:
 			name = repoNameFromRemote(f.RemoteURL)
 		}
 		if name != "" {

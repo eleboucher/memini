@@ -105,6 +105,7 @@ export {
   deriveLocalNamespace,
   resolveNamespace,
   repoNameFromRemote,
+  repoPathFromRemote,
   repoSlugFromRemote,
   type LocalSource,
 } from "./resolve.js";

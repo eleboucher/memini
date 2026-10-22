@@ -180,6 +180,19 @@ func TestResolvePrefixAndAgentInteraction(t *testing.T) {
 		}
 	})
 
+	t.Run("prefix and agent wrap a derived owner-tree path", func(t *testing.T) {
+		tree := "owner_tree"
+		st := store.ClientSettings{NamespacePrefix: &prefix, NamespaceScope: &tree}
+		f := nsresolve.Facts{RemoteURL: "https://github.com/acme/phoenix.git", Agent: "reviewer"}
+		got, err := nsresolve.Resolve(context.Background(), f, nil, st, "", "sd")
+		if err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+		if got.Namespace != "team/acme/phoenix/reviewer" || got.Source != nsresolve.SourceRemote {
+			t.Fatalf("got %q/%q, want team/acme/phoenix/reviewer/remote", got.Namespace, got.Source)
+		}
+	})
+
 	t.Run("prefix does not touch a declared namespace", func(t *testing.T) {
 		f := nsresolve.Facts{DeclaredNamespace: "gateway/hook", Agent: "reviewer"}
 		got, err := nsresolve.Resolve(context.Background(), f, nil, s, "", "sd")

@@ -682,9 +682,11 @@ type ClientSettings struct {
 	// reranker returns nothing at all instead of the composite-order fallback
 	// finalizeRecall degrades to. Must be >= 100.
 	RequestTimeoutMs *int `json:"request_timeout_ms,omitempty"`
-	// NamespaceScope is "repo" or "owner_repo": "repo" derives the namespace
-	// from the bare repo name; "owner_repo" disambiguates same-named repos
-	// across owners with an owner-repo slug (owner + "-" + repo).
+	// NamespaceScope is "repo", "owner_repo" or "owner_tree": "repo" derives
+	// the namespace from the bare repo name; "owner_repo" disambiguates
+	// same-named repos across owners with an owner-repo slug (owner + "-" +
+	// repo); "owner_tree" nests the repo under its owner (owner + "/" + repo),
+	// so the owner is an ancestor namespace shared by all of its repos.
 	NamespaceScope *string `json:"namespace_scope,omitempty"`
 	// NamespacePrefix is a namespace path prepended ahead of the
 	// derived/declared namespace; "" means no prefix.
@@ -753,10 +755,10 @@ func (s ClientSettings) Validate() error {
 	}
 	if s.NamespaceScope != nil {
 		switch *s.NamespaceScope {
-		case "repo", "owner_repo":
+		case "repo", "owner_repo", "owner_tree":
 		default:
-			return fmt.Errorf("client settings: namespace_scope must be %q or %q, got %q",
-				"repo", "owner_repo", *s.NamespaceScope)
+			return fmt.Errorf("client settings: namespace_scope must be %q, %q or %q, got %q",
+				"repo", "owner_repo", "owner_tree", *s.NamespaceScope)
 		}
 	}
 	if s.InjectLabels != nil {

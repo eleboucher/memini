@@ -467,12 +467,18 @@ function repoNameFromRemote(url) {
   return segs.length ? segs[segs.length - 1] : void 0;
 }
 function repoSlugFromRemote(url) {
+  return joinOwnerRepo(url, "-");
+}
+function repoPathFromRemote(url) {
+  return joinOwnerRepo(url, "/");
+}
+function joinOwnerRepo(url, sep) {
   const segs = remotePathSegments(url);
   if (!segs.length) return void 0;
   if (segs.length === 1) return segs[0];
   const owner = segs[segs.length - 2].replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
   const repo = segs[segs.length - 1];
-  return owner ? `${owner}-${repo}` : repo;
+  return owner ? `${owner}${sep}${repo}` : repo;
 }
 function withAgent(ns, agent) {
   const trimmed = (agent || "").trim();
@@ -487,7 +493,7 @@ function deriveLocalNamespace(f, scope = "repo") {
   let base;
   let source = "default";
   if (f.remote_url) {
-    const name = scope === "owner_repo" ? repoSlugFromRemote(f.remote_url) : repoNameFromRemote(f.remote_url);
+    const name = scope === "owner_repo" ? repoSlugFromRemote(f.remote_url) : scope === "owner_tree" ? repoPathFromRemote(f.remote_url) : repoNameFromRemote(f.remote_url);
     if (name) {
       base = name;
       source = "remote";
@@ -904,6 +910,7 @@ export {
   redactByName,
   redactValue,
   repoNameFromRemote,
+  repoPathFromRemote,
   repoSlugFromRemote,
   resolveHarnessCwd,
   resolveNamespace,

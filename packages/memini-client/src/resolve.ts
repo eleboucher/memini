@@ -58,12 +58,27 @@ export function repoNameFromRemote(url: string | undefined): string | undefined 
  * (repoSlugFromRemote). Used when namespace_scope is "owner_repo".
  */
 export function repoSlugFromRemote(url: string | undefined): string | undefined {
+  return joinOwnerRepo(url, "-");
+}
+
+/**
+ * An "owner/repo" path: the same segments and sanitization as
+ * repoSlugFromRemote, joined with "/" so the owner is a parent namespace that
+ * every repo under it reads through the ancestor cascade. Mirrors
+ * internal/nsresolve/remote.go (repoPathFromRemote). Used when
+ * namespace_scope is "owner_tree".
+ */
+export function repoPathFromRemote(url: string | undefined): string | undefined {
+  return joinOwnerRepo(url, "/");
+}
+
+function joinOwnerRepo(url: string | undefined, sep: string): string | undefined {
   const segs = remotePathSegments(url);
   if (!segs.length) return undefined;
   if (segs.length === 1) return segs[0];
   const owner = segs[segs.length - 2].replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
   const repo = segs[segs.length - 1];
-  return owner ? `${owner}-${repo}` : repo;
+  return owner ? `${owner}${sep}${repo}` : repo;
 }
 
 /**
@@ -84,7 +99,8 @@ function withAgent(ns: string, agent: string | undefined): string {
  * The no-pin, no-env local derivation chain: declared_namespace verbatim (no
  * agent suffix — a caller who declares a namespace outright means exactly
  * that one) beats a remote-derived repo name (or owner-repo slug under
- * scope="owner_repo") beats the toplevel basename beats the cwd basename,
+ * scope="owner_repo", or owner/repo path under scope="owner_tree") beats the
+ * toplevel basename beats the cwd basename,
  * then an agent suffix nests under whichever of the last three won. Falls
  * back to the literal namespace "default" only when there is truly nothing to
  * derive from (no declared_namespace, no remote, no toplevel, no cwd_basename).
@@ -95,7 +111,7 @@ function withAgent(ns: string, agent: string | undefined): string {
  */
 export function deriveLocalNamespace(
   f: ProjectFacts,
-  scope: "repo" | "owner_repo" = "repo",
+  scope: "repo" | "owner_repo" | "owner_tree" = "repo",
 ): { namespace: string; source: LocalSource } {
   if (f.declared_namespace) {
     return { namespace: f.declared_namespace, source: "declared" };
@@ -105,7 +121,12 @@ export function deriveLocalNamespace(
   let source: LocalSource = "default";
 
   if (f.remote_url) {
-    const name = scope === "owner_repo" ? repoSlugFromRemote(f.remote_url) : repoNameFromRemote(f.remote_url);
+    const name =
+      scope === "owner_repo"
+        ? repoSlugFromRemote(f.remote_url)
+        : scope === "owner_tree"
+          ? repoPathFromRemote(f.remote_url)
+          : repoNameFromRemote(f.remote_url);
     if (name) {
       base = name;
       source = "remote";
