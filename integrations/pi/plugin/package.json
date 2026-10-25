@@ -27,7 +27,7 @@
     "@types/node": "^24.19.2",
     "esbuild": "^0.28.2",
     "tsx": "^4.23.15",
-    "typebox": "1.4.2",
+    "typebox": "1.4.3",
     "typescript": "^5.9.3"
   },
   "peerDependencies": {
