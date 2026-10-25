@@ -3,7 +3,7 @@ module github.com/eleboucher/memini
 go 1.27.1
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.82.0
+	github.com/anthropics/anthropic-sdk-go v1.84.0
 	github.com/asg017/sqlite-vec-go-bindings v0.1.6
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/go-chi/chi/v5 v5.5.0
@@ -15,8 +15,8 @@ require (
 	// Pinned: newest ncruces with both sqlite3.Binary and wasm atomics, required
 	// by the sqlite-vec-go-bindings embedded wasm. See .renovaterc.json5.
 	github.com/ncruces/go-sqlite3 v0.21.2
-	github.com/oapi-codegen/runtime v1.7.0
-	github.com/openai/openai-go/v3 v3.82.0
+	github.com/oapi-codegen/runtime v1.8.0
+	github.com/openai/openai-go/v3 v3.86.0
 	github.com/pgvector/pgvector-go v0.4.1
 	github.com/pgvector/pgvector-go/pgx v0.4.1
 	github.com/prometheus/client_golang v1.25.0
@@ -48,7 +48,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/ncruces/julianday v1.0.0 // indirect
-	github.com/oapi-codegen/oapi-codegen/v2 v2.8.0 // indirect
+	github.com/oapi-codegen/oapi-codegen/v2 v2.8.1 // indirect
 	github.com/oasdiff/yaml v0.1.1 // indirect
 	github.com/oasdiff/yaml3 v0.0.14 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
