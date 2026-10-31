@@ -10,14 +10,15 @@
   ],
   "license": "MIT",
   "files": [
+    "index.js",
     "memini.js",
     "memini-v2.js",
     "README.md"
   ],
   "type": "module",
-  "main": "memini.js",
+  "main": "index.js",
   "exports": {
-    ".": "./memini.js",
+    ".": "./index.js",
     "./v2": "./memini-v2.js"
   }
 }

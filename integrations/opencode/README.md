@@ -37,13 +37,17 @@ opencode installs it from npm with Bun at startup.
 
 opencode's v2 preview (`opencode2`) uses a different plugin system: a `plugins`
 (plural) config array and a `Plugin.define({ id, setup })` module — the v1
-`{ id, server }` plugin above does not load under it. memini ships a v2 sibling
-that wires the same recall / capture / `memini_status` behaviour to v2's
-session hooks, public event stream, and tool transforms.
+`{ id, server }` contract does not load under it.
+`@eleboucher/opencode-memini` exports both, so the same package works on v1 and v2:
 
-The v2 loader treats a `plugins` entry as either an npm package specifier or a
-path. It cannot install this package's `/v2` export subpath as an npm package,
-so v2 ships under its own package name:
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["@eleboucher/opencode-memini"],
+}
+```
+
+`@eleboucher/opencode-memini-v2` ships only the v2 module:
 
 ```jsonc
 {
@@ -55,12 +59,6 @@ so v2 ships under its own package name:
 A bare entry resolves to the `latest` dist-tag, so that is where this package
 is published. `opencode2 plugin add @eleboucher/opencode-memini-v2` writes the
 entry for you, using whatever specifier you pass it.
-
-> **Why a second package rather than one with two entrypoints?** opencode
-> resolves a plugin through `exports["./server"]` before falling back to
-> `main`, and it uses that same `server` kind for v1-style plugins. Adding a
-> `./server` key to `@eleboucher/opencode-memini` would therefore hand the v2
-> module to v1 hosts, which cannot load it.
 
 To run from a checkout, use the local entrypoint. opencode does not install
 dependencies for path-loaded plugins; this one has none, so nothing else is

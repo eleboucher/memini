@@ -12,6 +12,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import meminiV2, { setup, extractQueryFromRequest, injectContext, resetForTests, turnKey } from "./memini-v2.js";
+import packageEntry from "./index.js";
 
 const tick = () => new Promise((r) => setImmediate(r));
 const drain = async () => {
@@ -113,6 +114,12 @@ test("default export is the v2 { id, setup } module shape", () => {
   assert.equal(meminiV2.id, "memini");
   assert.equal(typeof meminiV2.setup, "function");
   assert.equal(meminiV2.server, undefined); // not the v1 shape
+});
+
+test("package entrypoint loads under both opencode 1.x and 2.x", () => {
+  assert.equal(packageEntry.id, "memini");
+  assert.equal(typeof packageEntry.server, "function");
+  assert.equal(packageEntry.setup, setup);
 });
 
 test("extractQueryFromRequest reads the latest user message across shapes", () => {
