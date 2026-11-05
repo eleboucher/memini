@@ -1143,6 +1143,9 @@ func (c *Config) validateRecallScores() error {
 }
 
 func (c *Config) validateLLM() error {
+	if c.LLMTimeout <= 0 {
+		return fmt.Errorf("MEMINI_LLM_TIMEOUT must be > 0, got %v", c.LLMTimeout)
+	}
 	if c.LLMMaxTokens < 0 {
 		return fmt.Errorf("MEMINI_LLM_MAX_TOKENS must be >= 0, got %d", c.LLMMaxTokens)
 	}
@@ -1218,9 +1221,6 @@ func (c *Config) validate() error {
 	}
 	if err := c.validateLLM(); err != nil {
 		return err
-	}
-	if c.LLMTimeout <= 0 {
-		return fmt.Errorf("MEMINI_LLM_TIMEOUT must be > 0, got %v", c.LLMTimeout)
 	}
 	if c.RequestTimeout < 0 {
 		return fmt.Errorf("MEMINI_REQUEST_TIMEOUT must be >= 0, got %v", c.RequestTimeout)
