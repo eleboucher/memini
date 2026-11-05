@@ -24,7 +24,7 @@
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.4.0",
     "@earendil-works/pi-tui": "1.4.0",
-    "@types/node": "^24.19.2",
+    "@types/node": "^26.6.6",
     "esbuild": "^0.28.2",
     "tsx": "^4.23.15",
     "typebox": "1.4.3",
@@ -36,7 +36,7 @@
     "typebox": "*"
   },
   "engines": {
-    "node": ">=24.22.2"
+    "node": ">=26.13.0"
   },
   "pi": {
     "extensions": [
