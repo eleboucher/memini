@@ -34,7 +34,7 @@ func NewAnthropic(cfg Config) (*AnthropicClient, error) {
 	opts := []option.RequestOption{
 		option.WithAPIKey(apiKeyOr(cfg.APIKey)),
 		option.WithMaxRetries(maxRetries),
-		option.WithHTTPClient(httpClientOr(cfg.HTTPClient)),
+		option.WithHTTPClient(httpClientOr(cfg.HTTPClient, cfg.Timeout)),
 	}
 	if cfg.BaseURL != "" {
 		opts = append(opts, option.WithBaseURL(strings.TrimRight(cfg.BaseURL, "/")))

@@ -81,7 +81,7 @@ type Config struct {
 	// chi's Timeout middleware cancels its context (internal/api/rest.Mount).
 	// It never applies to /mcp (long-lived SSE), /healthz, /readyz, or
 	// /metrics. Default 60s rather than a more conservative 30s: the LLM HTTP
-	// client's own timeout is 120s (internal/llm/llm.go defaultHTTPTimeout),
+	// client's own timeout defaults to 120s (MEMINI_LLM_TIMEOUT),
 	// and POST /v1/answer can ride that full call chain (e.g. a
 	// reasoning_level=high rewrite/answer). A 30s default would systematically
 	// cut off those legitimate long-running answer calls; 60s cuts that risk
@@ -332,6 +332,8 @@ type Config struct {
 	// LLMAPIKey is the bearer token for the LLM endpoint, when it wants one.
 	// Optional.
 	LLMAPIKey string `env:"MEMINI_LLM_API_KEY"`
+	// LLMTimeout bounds each LLM HTTP attempt. Shorter operation deadlines still apply.
+	LLMTimeout time.Duration `env:"MEMINI_LLM_TIMEOUT" envDefault:"120s"`
 	// LLMModel is the chat model used for consolidation, distillation, answering
 	// and LLM reranking. DistillModel overrides it for distillation.
 	LLMModel string `env:"MEMINI_LLM_MODEL" envDefault:"gpt-4o-mini"`
@@ -1216,6 +1218,9 @@ func (c *Config) validate() error {
 	}
 	if err := c.validateLLM(); err != nil {
 		return err
+	}
+	if c.LLMTimeout <= 0 {
+		return fmt.Errorf("MEMINI_LLM_TIMEOUT must be > 0, got %v", c.LLMTimeout)
 	}
 	if c.RequestTimeout < 0 {
 		return fmt.Errorf("MEMINI_REQUEST_TIMEOUT must be >= 0, got %v", c.RequestTimeout)

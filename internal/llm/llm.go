@@ -172,6 +172,7 @@ type Config struct {
 	// should stay stable across calls; see Config.ExtraBody for the body
 	// counterpart.
 	ExtraHeaders map[string]string
+	Timeout      time.Duration
 	HTTPClient   *http.Client
 }
 
@@ -200,12 +201,15 @@ const maxRetries = 6
 const defaultHTTPTimeout = 120 * time.Second
 
 // httpClientOr returns cfg.HTTPClient when set (tests inject one), else a client
-// with the default per-attempt timeout.
-func httpClientOr(c *http.Client) *http.Client {
+// with the configured per-attempt timeout (120s when unset).
+func httpClientOr(c *http.Client, timeout time.Duration) *http.Client {
 	if c != nil {
 		return c
 	}
-	return &http.Client{Timeout: defaultHTTPTimeout}
+	if timeout == 0 {
+		timeout = defaultHTTPTimeout
+	}
+	return &http.Client{Timeout: timeout}
 }
 
 // defaultMaxTokens leaves headroom for JSON consolidation decisions, short QA

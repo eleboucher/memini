@@ -110,6 +110,7 @@ func runAssess(cmd *cobra.Command, _ []string) error {
 		BaseURL:      cfg.LLMBaseURL,
 		APIKey:       cfg.LLMAPIKey,
 		Model:        cfg.LLMModel,
+		Timeout:      cfg.LLMTimeout,
 		MaxTokens:    cfg.LLMMaxTokens,
 		ExtraBody:    extraBody,
 		ExtraHeaders: extraHeaders,

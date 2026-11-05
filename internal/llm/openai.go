@@ -34,7 +34,7 @@ func NewOpenAI(cfg Config) (*OpenAIClient, error) {
 		option.WithBaseURL(strings.TrimRight(cfg.BaseURL, "/")),
 		option.WithAPIKey(apiKeyOr(cfg.APIKey)),
 		option.WithMaxRetries(maxRetries),
-		option.WithHTTPClient(httpClientOr(cfg.HTTPClient)),
+		option.WithHTTPClient(httpClientOr(cfg.HTTPClient, cfg.Timeout)),
 	}
 	var extra []option.RequestOption
 	for key, raw := range cfg.ExtraBody {

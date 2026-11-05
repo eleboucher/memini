@@ -3,23 +3,28 @@ package llm
 import (
 	"net/http"
 	"testing"
+	"time"
 )
 
 func TestHTTPClientOr(t *testing.T) {
 	// nil → a client with the default per-attempt timeout (so a hung provider
 	// cannot park a goroutine forever).
-	got := httpClientOr(nil)
+	got := httpClientOr(nil, 0)
 	if got == nil {
-		t.Fatal("httpClientOr(nil) = nil, want a default client")
+		t.Fatal("httpClientOr(nil, 0) = nil, want a default client")
 	}
 	if got.Timeout != defaultHTTPTimeout {
 		t.Errorf("default client Timeout = %v, want %v", got.Timeout, defaultHTTPTimeout)
 	}
 
+	if got := httpClientOr(nil, 10*time.Minute); got.Timeout != 10*time.Minute {
+		t.Fatalf("configured timeout = %v", got.Timeout)
+	}
+
 	// A caller-supplied client is returned as-is (tests inject one).
 	custom := &http.Client{}
-	if httpClientOr(custom) != custom {
-		t.Error("httpClientOr(custom) should return the provided client unchanged")
+	if httpClientOr(custom, time.Minute) != custom {
+		t.Error("httpClientOr(custom, time.Minute) should return the provided client unchanged")
 	}
 }
 

@@ -60,6 +60,7 @@ server deployment. Treat the rest as tuning you reach for when you have a reason
 | [`MEMINI_LLM_BASE_URL`](#memini_llm_base_url) | none | [LLM (optional)](#llm-optional) |
 | [`MEMINI_LLM_API_KEY`](#memini_llm_api_key) | none | [LLM (optional)](#llm-optional) |
 | [`MEMINI_LLM_MODEL`](#memini_llm_model) | `gpt-4o-mini` | [LLM (optional)](#llm-optional) |
+| [`MEMINI_LLM_TIMEOUT`](#memini_llm_timeout) | `120s` | [LLM (optional)](#llm-optional) |
 | [`MEMINI_DISTILL_MODEL`](#memini_distill_model) | none | [LLM (optional)](#llm-optional) |
 | [`MEMINI_LLM_API`](#memini_llm_api) | `openai` | [LLM (optional)](#llm-optional) |
 | [`MEMINI_LLM_MAX_TOKENS`](#memini_llm_max_tokens) | `0` | [LLM (optional)](#llm-optional) |
@@ -150,7 +151,7 @@ duration, default `15s`. Set by `Config.ShutdownTimeout`.
 
 duration, default `60s`. Set by `Config.RequestTimeout`.
 
-`MEMINI_REQUEST_TIMEOUT` bounds how long a single /v1 REST request may run before chi's Timeout middleware cancels its context (internal/api/rest.Mount). It never applies to /mcp (long-lived SSE), /healthz, /readyz, or /metrics. Default 60s rather than a more conservative 30s: the LLM HTTP client's own timeout is 120s (internal/llm/llm.go defaultHTTPTimeout), and POST /v1/answer can ride that full call chain (e.g. a reasoning_level=high rewrite/answer). A 30s default would systematically cut off those legitimate long-running answer calls; 60s cuts that risk roughly in half without going as high as the LLM client's own ceiling. It still doesn't fully cover a 120s LLM call — deployments that regularly hit that ceiling should raise this explicitly. 0 disables it.
+`MEMINI_REQUEST_TIMEOUT` bounds how long a single /v1 REST request may run before chi's Timeout middleware cancels its context (internal/api/rest.Mount). It never applies to /mcp (long-lived SSE), /healthz, /readyz, or /metrics. Default 60s rather than a more conservative 30s: the LLM HTTP client's own timeout defaults to 120s (MEMINI_LLM_TIMEOUT), and POST /v1/answer can ride that full call chain (e.g. a reasoning_level=high rewrite/answer). A 30s default would systematically cut off those legitimate long-running answer calls; 60s cuts that risk roughly in half without going as high as the LLM client's own ceiling. It still doesn't fully cover a 120s LLM call — deployments that regularly hit that ceiling should raise this explicitly. 0 disables it.
 
 ### `MEMINI_METRICS_ADDR`
 
@@ -355,6 +356,12 @@ string, default none. Set by `Config.LLMAPIKey`.
 string, default `gpt-4o-mini`. Set by `Config.LLMModel`.
 
 `MEMINI_LLM_MODEL` is the chat model used for consolidation, distillation, answering and LLM reranking. `MEMINI_DISTILL_MODEL` overrides it for distillation.
+
+### `MEMINI_LLM_TIMEOUT`
+
+duration, default `120s`. Set by `Config.LLMTimeout`.
+
+`MEMINI_LLM_TIMEOUT` bounds each LLM HTTP attempt. Shorter operation deadlines still apply.
 
 ### `MEMINI_DISTILL_MODEL`
 
