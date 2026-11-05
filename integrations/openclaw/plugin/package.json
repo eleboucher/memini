@@ -1,6 +1,6 @@
 {
   "name": "@eleboucher/memini",
-  "version": "0.7.38",
+  "version": "0.7.39",
   "private": true,
   "files": [
     "dist",
