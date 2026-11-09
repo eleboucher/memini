@@ -16,7 +16,7 @@ require (
 	// by the sqlite-vec-go-bindings embedded wasm. See .renovaterc.json5.
 	github.com/ncruces/go-sqlite3 v0.21.2
 	github.com/oapi-codegen/runtime v1.8.0
-	github.com/openai/openai-go/v3 v3.96.0
+	github.com/openai/openai-go/v3 v3.97.0
 	github.com/pgvector/pgvector-go v0.4.1
 	github.com/pgvector/pgvector-go/pgx v0.4.1
 	github.com/prometheus/client_golang v1.25.0
