@@ -12,7 +12,7 @@
     "gen-api": "node scripts/gen-catalog.mjs && openapi-typescript ../api/openapi.yaml -o src/api-schema.gen.ts"
   },
   "dependencies": {
-    "@preact/signals": "^2.11.3",
+    "@preact/signals": "^2.11.4",
     "d3-force": "^3.0.1",
     "force-graph": "^1.52.0",
     "preact": "^11.2.0",
