@@ -14,7 +14,7 @@ stern = "1.35.0"
 oxfmt = "0.77.0"
 yq = "4.54.2"
 jq = "1.8.2"
-node = "24.22.2"
+node = "26.13.1"
 
 [settings]
 # Required for the postinstall hook below (auto-installs git hooks via lefthook).

@@ -15,14 +15,14 @@ importers:
         version: 1.4.6
     devDependencies:
       '@types/node':
-        specifier: ^24.19.2
-        version: 24.19.2
+        specifier: ^26.6.6
+        version: 26.6.6
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
       openclaw:
         specifier: latest
-        version: 2026.11.1(@aws-sdk/credential-provider-node@3.972.83)(@opentelemetry/api@1.9.0)(@smithy/signature-v4@5.7.3)(supports-color@10.2.2)
+        version: 2026.11.3(@aws-sdk/credential-provider-node@3.972.83)(@opentelemetry/api@1.9.0)(@smithy/signature-v4@5.7.3)(supports-color@10.2.2)
       tsx:
         specifier: ^4.23.15
         version: 4.23.15
@@ -39,8 +39,8 @@ importers:
         specifier: 1.5.0
         version: 1.5.0
       '@types/node':
-        specifier: ^24.19.2
-        version: 24.19.2
+        specifier: ^26.6.6
+        version: 26.6.6
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
@@ -57,8 +57,8 @@ importers:
   packages/memini-client:
     devDependencies:
       '@types/node':
-        specifier: ^24.19.2
-        version: 24.19.2
+        specifier: ^26.6.6
+        version: 26.6.6
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
@@ -535,8 +535,8 @@ packages:
     resolution: {integrity: sha512-juG5VWh4qAivzTAeMzvY9xs9HY5rAcr2E4I7tiSSCokRFi7XIZCAu92ZkSTsIj1OPceCifL3cpfteP3pDT9/QQ==}
     engines: {node: '>=14.0.0'}
 
-  '@openclaw/ai@2026.11.1':
-    resolution: {integrity: sha512-YMxXMnskS2jErrwjqFWIqMLZ9L0wZbp99kwPi5rg+vSrddByav7Do2oi4r0pZkJlYuqBiak0NJcyL8FMjnGJ4g==}
+  '@openclaw/ai@2026.11.3':
+    resolution: {integrity: sha512-NNLfm1BSiVGfDW2M3wbTimtXQ5E4jdn87Fl+mAks9j2o4vQ1LZb86dC9K5kcKNJDciQZ0T1JlExK1rnldLU8IA==}
     engines: {node: '>=22.19.0'}
 
   '@openclaw/fs-safe-darwin-arm64@0.26.5':
@@ -878,8 +878,8 @@ packages:
   '@types/jsesc@2.5.1':
     resolution: {integrity: sha512-9VN+6yxLOPLOav+7PwjZbxiID2bVaeq0ED4qSQmdQTdjnXJSaCVKTR58t15oqH1H5t8Ng2ZX1SabJVoN9Q34bw==}
 
-  '@types/node@24.19.2':
-    resolution: {integrity: sha512-93d49wCWJkCyN87MxLpNN6KXPCwFw7bVUg79mGUV1OS40JGWwVCr8n61DXCSqz7CV6/VfPkb7xec7uP2M+QHWQ==}
+  '@types/node@26.6.6':
+    resolution: {integrity: sha512-MzQj+8Kx3XI40OmUAE6Qoh58ZMNstNNMwn2nfd3qWsfe7nDNSqJNzes4njhz6AHwrSHOffSLwXU6yb474Q4aog==}
 
   '@types/retry@0.12.0':
     resolution: {integrity: sha512-wWKOClTTiizcZhXnPY4wikVAwmdYHp8q6DmC+EJUzAMsycb7HB32Kh9RN4+0gExjmPmZSAQjgURXIGATPegAvA==}
@@ -1906,8 +1906,8 @@ packages:
       zod:
         optional: true
 
-  openclaw@2026.11.1:
-    resolution: {integrity: sha512-2pSbt/taBKM/ofPXsiOEmVefgUdVHYRZOmcWNDyx67WUfeGFXqtfqLvtwYOiH4NcLolDSLMUgsno2oYhTVXptw==}
+  openclaw@2026.11.3:
+    resolution: {integrity: sha512-FBq/q0TCaoA2b7qfdV0q81fHhI6RBB1zAQfJQREc1u2TlK5khVgCUsAlXskLWthyVqRz5PWEj+oOmfYgK58dHg==}
     engines: {node: '>=24.16.0 <25 || >=26.1.0'}
     hasBin: true
     bundledDependencies:
@@ -2301,8 +2301,8 @@ packages:
     resolution: {integrity: sha512-rvKSBiC5zqCCiDZ9kAOszZcDvdAHwwIKJG33Ykj43OKcWsnmcBRL09YTU4nOeHZ8Y2a7l1MgTd08SBe9A8Qj6A==}
     engines: {node: '>=18'}
 
-  undici-types@7.24.6:
-    resolution: {integrity: sha512-WRNW+sJgj5OBN4/0JpHFqtqzhpbnV0GuB+OozA9gCL7a993SmU+1JBZCzLNxYsbMfIeDL+lTsphD5jN5N+n0zg==}
+  undici-types@8.9.0:
+    resolution: {integrity: sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg==}
 
   undici@8.10.2:
     resolution: {integrity: sha512-/y4/bH9YNU5hi9NIrpOuvGXFcxrj3CMrV+/AYpowAYTpHn8gX/XPFjNy766FPoYY0miQhdW977JFWKGNhBdwyQ==}
@@ -3011,7 +3011,7 @@ snapshots:
 
   '@mozilla/readability@0.6.0': {}
 
-  '@openclaw/ai@2026.11.1(@aws-sdk/credential-provider-node@3.972.83)(@modelcontextprotocol/sdk@1.32.1(supports-color@10.2.2)(zod@4.6.5))(@opentelemetry/api@1.9.0)(@smithy/signature-v4@5.7.3)(supports-color@10.2.2)(undici@8.12.2)(ws@8.22.0)(zod@4.6.5)':
+  '@openclaw/ai@2026.11.3(@aws-sdk/credential-provider-node@3.972.83)(@modelcontextprotocol/sdk@1.32.1(supports-color@10.2.2)(zod@4.6.5))(@opentelemetry/api@1.9.0)(@smithy/signature-v4@5.7.3)(supports-color@10.2.2)(undici@8.12.2)(ws@8.22.0)(zod@4.6.5)':
     dependencies:
       '@anthropic-ai/sdk': 0.131.0(zod@4.6.5)
       '@google/genai': 2.27.0(@modelcontextprotocol/sdk@1.32.1(supports-color@10.2.2)(zod@4.6.5))(supports-color@10.2.2)
@@ -3284,9 +3284,9 @@ snapshots:
 
   '@types/jsesc@2.5.1': {}
 
-  '@types/node@24.19.2':
+  '@types/node@26.6.6':
     dependencies:
-      undici-types: 7.24.6
+      undici-types: 8.9.0
 
   '@types/retry@0.12.0': {}
 
@@ -4129,7 +4129,7 @@ snapshots:
       ws: 8.22.0
       zod: 4.6.5
 
-  openclaw@2026.11.1(@aws-sdk/credential-provider-node@3.972.83)(@opentelemetry/api@1.9.0)(@smithy/signature-v4@5.7.3)(supports-color@10.2.2):
+  openclaw@2026.11.3(@aws-sdk/credential-provider-node@3.972.83)(@opentelemetry/api@1.9.0)(@smithy/signature-v4@5.7.3)(supports-color@10.2.2):
     dependencies:
       '@agentclientprotocol/sdk': 1.7.0(zod@4.6.5)
       '@anthropic-ai/sdk': 0.131.0(zod@4.6.5)
@@ -4146,7 +4146,7 @@ snapshots:
       '@mistralai/mistralai': 2.7.0(@opentelemetry/api@1.9.0)
       '@modelcontextprotocol/sdk': 1.32.1(supports-color@10.2.2)(zod@4.6.5)
       '@mozilla/readability': 0.6.0
-      '@openclaw/ai': 2026.11.1(@aws-sdk/credential-provider-node@3.972.83)(@modelcontextprotocol/sdk@1.32.1(supports-color@10.2.2)(zod@4.6.5))(@opentelemetry/api@1.9.0)(@smithy/signature-v4@5.7.3)(supports-color@10.2.2)(undici@8.12.2)(ws@8.22.0)(zod@4.6.5)
+      '@openclaw/ai': 2026.11.3(@aws-sdk/credential-provider-node@3.972.83)(@modelcontextprotocol/sdk@1.32.1(supports-color@10.2.2)(zod@4.6.5))(@opentelemetry/api@1.9.0)(@smithy/signature-v4@5.7.3)(supports-color@10.2.2)(undici@8.12.2)(ws@8.22.0)(zod@4.6.5)
       '@openclaw/fs-safe': 0.26.5
       '@openclaw/proc-safe': 0.4.2
       '@openclaw/proxyline': 0.4.0(undici@8.12.2)
@@ -4410,7 +4410,7 @@ snapshots:
       '@protobufjs/path': 1.1.2
       '@protobufjs/pool': 1.1.0
       '@protobufjs/utf8': 1.1.2
-      '@types/node': 24.19.2
+      '@types/node': 26.6.6
       long: 5.3.2
 
   proxy-addr@2.0.7:
@@ -4689,7 +4689,7 @@ snapshots:
 
   uint8array-extras@1.5.0: {}
 
-  undici-types@7.24.6: {}
+  undici-types@8.9.0: {}
 
   undici@8.10.2: {}
 
