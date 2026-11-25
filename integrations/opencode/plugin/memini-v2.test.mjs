@@ -40,12 +40,38 @@ function installFetch({ search = [] } = {}) {
   return { posts, restore: () => (globalThis.fetch = original) };
 }
 
+// makeMcpMock builds the ctx.mcp mock: a Map-backed server registry and a
+// transform that replays synchronously (the real registration is synchronous,
+// so state is observable right after setup()).
+function makeMcpMock(state) {
+  const editor = {
+    list: () => [...state.mcpServers.entries()],
+    get: (name) => state.mcpServers.get(name),
+    set: (name, config) => state.mcpServers.set(name, config),
+    update: (name, fn) => {
+      const server = state.mcpServers.get(name);
+      if (server) fn(server);
+    },
+    remove: (name) => state.mcpServers.delete(name),
+  };
+  return {
+    transform: async (fn) => {
+      fn(editor);
+      return { dispose: async () => {} };
+    },
+  };
+}
+
 // makeCtx builds a mock v2 plugin context. Set withHooks:false to simulate a
 // build whose ctx lacks session/tool/event. session.get mimics v2's
 // ctx.session.get({ sessionID }) returning a bare SessionInfo ({ id, parentID? }).
-function makeCtx({ options = {}, withHooks = true, sessionInfo = {}, ancestryResponse } = {}) {
-  const state = { hooks: {}, tool: null, emitted: [] };
+// `location` sets ctx.location (opencode 2.3+ per-location plugin copies);
+// `withMcp:false` simulates a build without ctx.mcp.
+function makeCtx({ options = {}, withHooks = true, sessionInfo = {}, ancestryResponse, location, withMcp = true } = {}) {
+  const state = { hooks: {}, tool: null, emitted: [], mcpServers: new Map() };
   const ctx = { options };
+  if (location) ctx.location = { directory: location };
+  if (withMcp) ctx.mcp = makeMcpMock(state);
   if (withHooks) {
     ctx.session = {
       hook: async (name, cb) => {
@@ -169,6 +195,7 @@ test("structured v2 logging does not write to console.error", async () => {
   const consoleErrors = [];
   const calls = [];
   console.error = (...args) => consoleErrors.push(args);
+  const { restore } = installFetch();
   try {
     const { ctx } = makeCtx({ withHooks: false });
     ctx.app = { log: async (entry) => calls.push(entry) };
@@ -180,6 +207,7 @@ test("structured v2 logging does not write to console.error", async () => {
     });
     assert.deepEqual(consoleErrors, []);
   } finally {
+    restore();
     console.error = realError;
   }
 });
@@ -727,6 +755,131 @@ test("setup degrades gracefully when ctx lacks session/tool/event", async () => 
     const { ctx } = makeCtx({ options: { namespace: "test-ns" }, withHooks: false });
     const cleanup = await setup(ctx); // must not throw
     assert.equal(typeof cleanup, "function");
+    await cleanup();
+  } finally {
+    restore();
+  }
+});
+
+// --- Per-location routing (opencode 2.3+) ----------------------------------
+//
+// The v2 service hosts every project in one process; opencode 2.3 starts a
+// separate plugin copy per project directory and passes it
+// ctx.location.directory. The plugin must resolve its namespace from that
+// location, filter capture events to it, and point the MCP tools'
+// X-Memini-Namespace header at the live namespace for this location.
+
+test("setup points the MCP tools' X-Memini-Namespace header at this location's namespace", async () => {
+  BASE_ENV();
+  const { restore } = installFetch({ search: [] });
+  try {
+    const { ctx, state } = makeCtx({ location: "/tmp/work/alpha" });
+    state.mcpServers.set("memini", {
+      type: "remote",
+      url: "http://localhost:8080/mcp",
+      headers: { Authorization: "Bearer t", "X-Memini-Namespace": "pinned" },
+    });
+    await setup(ctx);
+    const server = state.mcpServers.get("memini");
+    assert.equal(server.headers["X-Memini-Namespace"], "alpha", "the live namespace for this location wins");
+    assert.equal(server.headers.Authorization, "Bearer t", "other headers survive the transform");
+  } finally {
+    restore();
+  }
+});
+
+test("the MCP server name is configurable via options.mcp_server", async () => {
+  BASE_ENV();
+  const { restore } = installFetch({ search: [] });
+  try {
+    const { ctx, state } = makeCtx({ options: { mcp_server: "custom-memini" } });
+    state.mcpServers.set("custom-memini", { type: "remote", headers: {} });
+    state.mcpServers.set("memini", { type: "remote", headers: {} });
+    await setup(ctx);
+    assert.ok(state.mcpServers.get("custom-memini").headers["X-Memini-Namespace"], "the configured server gets the header");
+    assert.equal("X-Memini-Namespace" in state.mcpServers.get("memini").headers, false, "the default name is untouched");
+  } finally {
+    restore();
+  }
+});
+
+test("setup is unaffected when ctx.mcp is absent (the config pin stays as fallback)", async () => {
+  BASE_ENV();
+  const { restore } = installFetch({ search: [] });
+  try {
+    const { ctx } = makeCtx({ location: "/tmp/work/alpha", withMcp: false });
+    await setup(ctx); // must not throw
+  } finally {
+    restore();
+  }
+});
+
+test("the status tool reports the plugin's location as its project", async () => {
+  BASE_ENV();
+  const { restore } = installFetch({ search: [] });
+  try {
+    const { ctx, state } = makeCtx({ location: "/tmp/work/alpha" });
+    await setup(ctx);
+    const res = await state.tool.execute({});
+    assert.match(res.content[0].text, /project: \/tmp\/work\/alpha/, "namespace resolves from ctx.location.directory");
+  } finally {
+    restore();
+  }
+});
+
+// Both plugin copies run in one service process; the alpha copy captures
+// only alpha events, the beta copy only beta events, and events from a
+// third project are captured by neither.
+test("capture drops events whose location is another plugin copy's project", async () => {
+  BASE_ENV();
+  const { posts, restore } = installFetch();
+  try {
+    const alpha = makeCtx({ location: "/tmp/work/alpha" });
+    alpha.state.emitted = [
+      { type: "session.inbox.enqueued", location: { directory: "/tmp/work/alpha" }, data: { sessionID: "s-alpha", item: { type: "user", payload: { text: "alpha turn" } } } },
+      { type: "session.text.ended", location: { directory: "/tmp/work/alpha" }, data: { sessionID: "s-alpha", assistantMessageID: "a-alpha", ordinal: 0, text: "alpha reply" } },
+      { type: "session.execution.succeeded", location: { directory: "/tmp/work/alpha" }, data: { sessionID: "s-alpha" } },
+      { type: "session.inbox.enqueued", location: { directory: "/tmp/work/gamma" }, data: { sessionID: "s-gamma", item: { type: "user", payload: { text: "gamma turn" } } } },
+      { type: "session.text.ended", location: { directory: "/tmp/work/gamma" }, data: { sessionID: "s-gamma", assistantMessageID: "a-gamma", ordinal: 0, text: "gamma reply" } },
+      { type: "session.execution.succeeded", location: { directory: "/tmp/work/gamma" }, data: { sessionID: "s-gamma" } },
+    ];
+    const beta = makeCtx({ location: "/tmp/work/beta" });
+    beta.state.emitted = [
+      { type: "session.inbox.enqueued", location: { directory: "/tmp/work/beta" }, data: { sessionID: "s-beta", item: { type: "user", payload: { text: "beta turn" } } } },
+      { type: "session.text.ended", location: { directory: "/tmp/work/beta" }, data: { sessionID: "s-beta", assistantMessageID: "a-beta", ordinal: 0, text: "beta reply" } },
+      { type: "session.execution.succeeded", location: { directory: "/tmp/work/beta" }, data: { sessionID: "s-beta" } },
+    ];
+    const cleanupAlpha = await setup(alpha.ctx);
+    const cleanupBeta = await setup(beta.ctx);
+    await drain();
+    const contents = posts.map((p) => p.content);
+    assert.equal(posts.length, 2, "each copy captures its own location's turn");
+    assert.ok(contents.some((c) => /alpha turn/.test(c)));
+    assert.ok(contents.some((c) => /beta turn/.test(c)));
+    assert.equal(contents.some((c) => /gamma turn/.test(c)), false, "a third project's events are captured by neither copy");
+    await cleanupAlpha();
+    await cleanupBeta();
+  } finally {
+    restore();
+  }
+});
+
+// Events without a location field pass the filter: older builds emit none, so
+// a locationless event must not be dropped.
+test("capture still accepts events without a location field", async () => {
+  BASE_ENV();
+  const { posts, restore } = installFetch();
+  try {
+    const { ctx, state } = makeCtx({ location: "/tmp/work/alpha" });
+    state.emitted = [
+      { type: "session.inbox.enqueued", data: { sessionID: "s1", item: { type: "user", payload: { text: "no-location turn" } } } },
+      { type: "session.text.ended", data: { sessionID: "s1", assistantMessageID: "a1", ordinal: 0, text: "reply" } },
+      { type: "session.execution.succeeded", data: { sessionID: "s1" } },
+    ];
+    const cleanup = await setup(ctx);
+    await drain();
+    assert.equal(posts.length, 1, "locationless events are captured");
+    assert.match(posts[0].content, /no-location turn/);
     await cleanup();
   } finally {
     restore();

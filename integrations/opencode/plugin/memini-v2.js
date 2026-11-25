@@ -56,12 +56,12 @@
  * that ctx.app has no `log` method on current builds (it is { name, version,
  * channel }), so diagnostics stay silent — they are best-effort by design.
  *
- * KNOWN LIMITATION (beta): the v2 service hosts every project in ONE process
- * with ONE plugin instance, and hooks/events are service-global. The namespace
- * is resolved from the plugin process's cwd (typically the service's start
- * directory), so sessions from other projects would recall/capture against the
- * same namespace. Pin `MEMINI_NAMESPACE` if needed and re-check the upstream
- * ctx as it gains per-location routing.
+ * KNOWN LIMITATION (beta): builds before opencode 2.3 had no ctx.location, so
+ * the namespace resolved from the plugin process's cwd (typically the
+ * service's start directory) and every project shared it. Since 2.3 the
+ * plugin resolves from ctx.location.directory (per-location plugin copies),
+ * filters capture events to that location, and points the MCP tools'
+ * X-Memini-Namespace header at the live namespace via ctx.mcp.transform.
  */
 
 import {
@@ -186,10 +186,13 @@ function contextAlreadyInjected(event) {
 
 export async function setup(ctx) {
   const options = (ctx && ctx.options) || {};
-  // v2 setup(ctx) carries no worktree/directory the way v1's PluginInput did;
-  // opencode runs the plugin in the project root, so cwd is the project dir —
-  // the same input resolveConfig/deriveNamespace expect.
-  const dir = process.cwd();
+  // v2 setup(ctx) hands the plugin its loaded location: since opencode 2.3,
+  // opencode starts a separate plugin copy per project directory and passes
+  // it the directory in ctx.location.directory. Fall back to the process cwd
+  // only on builds that predate the field — the same input
+  // resolveConfig/deriveNamespace expect.
+  const locDir = ctx && ctx.location && typeof ctx.location.directory === "string" ? ctx.location.directory : "";
+  const dir = locDir || process.cwd();
   const emitLog = async (level, message) => {
     try {
       if (typeof ctx?.app?.log !== "function") return;
@@ -261,6 +264,32 @@ export async function setup(ctx) {
     if (typeof reg === "function") cleanups.push(reg);
     else if (reg && typeof reg.dispose === "function") cleanups.push(() => reg.dispose());
   };
+
+  // --- MCP TOOLS: point the opencode.json `mcp` server at this location ---
+  //
+  // The plugin instance is loaded per location, so the header update is
+  // scoped to this location's copy. The config pin in opencode.json stays as
+  // the fallback: on builds without ctx.mcp the user's pinned header keeps
+  // working as before.
+  if (ctx && ctx.mcp && typeof ctx.mcp.transform === "function") {
+    const serverName = options.mcp_server || "memini";
+    try {
+      const live = await currentConfig();
+      const reg = await ctx.mcp.transform((editor) => {
+        // editor.update skips a missing server on some builds; read first so
+        // the update is a no-op where this location has no such server.
+        const server = typeof editor.get === "function" ? editor.get(serverName) : undefined;
+        if (!server) return;
+        editor.update(serverName, (config) => {
+          config.headers = { ...config.headers, "X-Memini-Namespace": live.namespace };
+        });
+      });
+      disposeReg(reg);
+    } catch (error) {
+      // Best-effort: without the header update the config pin is the fallback.
+      void log.warn(`mcp transform failed: ${String(error)}`);
+    }
+  }
 
   // --- RECALL: ctx.session.hook("context") --------------------------------
   //
@@ -527,6 +556,12 @@ export async function setup(ctx) {
     if (stored === null) capturedAssistantIDs.delete(assistantID);
   };
   const handleEvent = async (event) => {
+    // Per-location capture: the event stream is service-global, so a plugin
+    // copy drops events whose location is another project's. Without this,
+    // every copy could claim the same assistant id and the first one to
+    // write would capture the turn into its own namespace.
+    const loc = event && event.location && event.location.directory;
+    if (loc && locDir && loc !== locDir) return;
     const type = event && event.type;
     const data = (event && event.data) || {};
     const sessionID = data.sessionID || (data.properties && data.properties.sessionID);
